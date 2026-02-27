@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "voxsentinel-diarization"
 version = "0.1.0"
 description = "Speaker diarization service for VoxSentinel — identifies and labels speakers"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "tg-common",
     "pyannote.audio>=3.3",
@@ -29,6 +29,9 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/diarization"]
 
 [tool.ruff]
 target-version = "py312"

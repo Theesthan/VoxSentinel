@@ -29,6 +29,15 @@ from nlp.sentiment_engine import SentimentEngine
 
 logger = structlog.get_logger()
 
+# ── Stream key prefix ──
+# After diarization enrichment, NLP consumes enriched_tokens instead of
+# raw transcript_tokens.  Set the env-var TG_NLP_INPUT_STREAM to override.
+import os as _os
+
+NLP_INPUT_STREAM_PREFIX: str = _os.environ.get(
+    "TG_NLP_INPUT_STREAM", "enriched_tokens"
+)
+
 # ── service singletons (set during lifespan) ──
 _keyword_engine: KeywordEngine | None = None
 _sentiment_engine: SentimentEngine | None = None
@@ -125,7 +134,12 @@ async def _consume_stream(
     sentiment_engine: SentimentEngine,
     pii_redactor: PiiRedactor,
 ) -> None:
-    """Consume transcript tokens from a Redis stream and process them."""
+    """Consume enriched tokens from a Redis stream and process them.
+
+    The NLP service reads from ``enriched_tokens:{stream_id}`` which is
+    published by the diarization service.  If diarization is not running,
+    the service falls back to ``transcript_tokens:{stream_id}``.
+    """
     last_id = "0"
     while True:
         try:

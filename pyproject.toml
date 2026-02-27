@@ -77,4 +77,5 @@ testpaths = [
     "services/vad/tests",
     "services/asr/tests",
     "services/nlp/tests",
+    "services/diarization/tests",
 ]
