@@ -1,0 +1,42 @@
+# Kubernetes Deployment manifest for the Alert service.
+# Dispatches alerts via WebSocket, Slack, Teams, email, SMS, webhooks, and Signal.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-alert
+  labels:
+    app: transcriptguard
+    component: alert
+spec:
+  replicas: {{ .Values.alert.replicaCount }}
+  selector:
+    matchLabels:
+      app: transcriptguard
+      component: alert
+  template:
+    metadata:
+      labels:
+        app: transcriptguard
+        component: alert
+    spec:
+      containers:
+        - name: alert
+          image: "{{ .Values.alert.image.repository }}:{{ .Values.alert.image.tag }}"
+          imagePullPolicy: {{ .Values.alert.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.alert.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

@@ -1,0 +1,47 @@
+# Kubernetes Deployment manifest for the ASR (Automatic Speech Recognition) service.
+# Runs multi-engine ASR with failover (Deepgram, Whisper, etc.).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-asr
+  labels:
+    app: transcriptguard
+    component: asr
+spec:
+  replicas: {{ .Values.asr.replicaCount }}
+  selector:
+    matchLabels:
+      app: transcriptguard
+      component: asr
+  template:
+    metadata:
+      labels:
+        app: transcriptguard
+        component: asr
+    spec:
+      containers:
+        - name: asr
+          image: "{{ .Values.asr.image.repository }}:{{ .Values.asr.image.tag }}"
+          imagePullPolicy: {{ .Values.asr.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.asr.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          {{- if .Values.asr.gpu.enabled }}
+          resources:
+            limits:
+              nvidia.com/gpu: {{ .Values.asr.gpu.count }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10

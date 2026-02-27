@@ -1,0 +1,42 @@
+# Kubernetes Deployment manifest for the Storage service.
+# Persists transcripts, alerts, and audit hashes to PostgreSQL and Elasticsearch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-storage
+  labels:
+    app: transcriptguard
+    component: storage
+spec:
+  replicas: {{ .Values.storage.replicaCount }}
+  selector:
+    matchLabels:
+      app: transcriptguard
+      component: storage
+  template:
+    metadata:
+      labels:
+        app: transcriptguard
+        component: storage
+    spec:
+      containers:
+        - name: storage
+          image: "{{ .Values.storage.image.repository }}:{{ .Values.storage.image.tag }}"
+          imagePullPolicy: {{ .Values.storage.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.storage.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

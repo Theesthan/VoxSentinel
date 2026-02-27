@@ -1,0 +1,42 @@
+# Kubernetes Deployment manifest for the NLP service.
+# Handles keyword detection, sentiment analysis, intent classification, and PII redaction.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-nlp
+  labels:
+    app: transcriptguard
+    component: nlp
+spec:
+  replicas: {{ .Values.nlp.replicaCount }}
+  selector:
+    matchLabels:
+      app: transcriptguard
+      component: nlp
+  template:
+    metadata:
+      labels:
+        app: transcriptguard
+        component: nlp
+    spec:
+      containers:
+        - name: nlp
+          image: "{{ .Values.nlp.image.repository }}:{{ .Values.nlp.image.tag }}"
+          imagePullPolicy: {{ .Values.nlp.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.nlp.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10

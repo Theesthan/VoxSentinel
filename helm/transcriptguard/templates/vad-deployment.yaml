@@ -1,0 +1,42 @@
+# Kubernetes Deployment manifest for the VAD (Voice Activity Detection) service.
+# Runs Silero VAD to detect speech segments in audio chunks.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-vad
+  labels:
+    app: transcriptguard
+    component: vad
+spec:
+  replicas: {{ .Values.vad.replicaCount }}
+  selector:
+    matchLabels:
+      app: transcriptguard
+      component: vad
+  template:
+    metadata:
+      labels:
+        app: transcriptguard
+        component: vad
+    spec:
+      containers:
+        - name: vad
+          image: "{{ .Values.vad.image.repository }}:{{ .Values.vad.image.tag }}"
+          imagePullPolicy: {{ .Values.vad.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.vad.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

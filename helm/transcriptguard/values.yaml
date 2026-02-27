@@ -1,0 +1,170 @@
+# Default values for VoxSentinel (TranscriptGuard)
+# This is a YAML-formatted file.
+
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# --- Ingestion Service ---
+ingestion:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/ingestion
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# --- VAD Service ---
+vad:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/vad
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# --- ASR Service ---
+asr:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/asr
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  gpu:
+    enabled: false
+    count: 1
+
+# --- NLP Service ---
+nlp:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/nlp
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# --- Diarization Service ---
+diarization:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/diarization
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  gpu:
+    enabled: false
+    count: 1
+
+# --- Alert Service ---
+alert:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/alerts
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# --- Storage Service ---
+storage:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/storage
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# --- API Gateway ---
+api:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/api
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# --- Dashboard ---
+dashboard:
+  replicaCount: 1
+  image:
+    repository: transcriptguard/dashboard
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8501
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# --- Infrastructure ---
+redis:
+  enabled: true
+  auth:
+    enabled: false
+
+postgres:
+  enabled: true
+  auth:
+    database: transcriptguard
+    username: tguser
+    password: changeme
+
+elasticsearch:
+  enabled: true
+  replicas: 1

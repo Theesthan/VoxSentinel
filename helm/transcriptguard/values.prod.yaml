@@ -1,0 +1,80 @@
+# Production overrides for VoxSentinel (TranscriptGuard)
+
+ingestion:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+vad:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+asr:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  gpu:
+    enabled: true
+    count: 1
+
+nlp:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+diarization:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  gpu:
+    enabled: true
+    count: 1
+
+alert:
+  replicaCount: 2
+
+storage:
+  replicaCount: 2
+
+api:
+  replicaCount: 3
+  service:
+    type: LoadBalancer
+
+dashboard:
+  replicaCount: 2
+  service:
+    type: LoadBalancer
+
+postgres:
+  auth:
+    password: ""  # Use secret in production
+
+elasticsearch:
+  replicas: 3

@@ -1,0 +1,56 @@
+// Common protobuf definitions shared across VoxSentinel (TranscriptGuard) services.
+// Defines shared message types: AudioChunk, TranscriptSegment, TimestampRange, etc.
+
+syntax = "proto3";
+
+package transcriptguard;
+
+option java_multiple_files = true;
+option java_package = "com.transcriptguard.proto";
+
+// Represents a chunk of raw audio data from the ingestion pipeline.
+message AudioChunk {
+  string stream_id = 1;
+  string session_id = 2;
+  bytes audio_data = 3;
+  int32 sample_rate = 4;
+  int32 channels = 5;
+  double timestamp_start = 6;
+  double timestamp_end = 7;
+  string encoding = 8;
+}
+
+// Represents a transcribed text segment with timing and speaker info.
+message TranscriptSegment {
+  string segment_id = 1;
+  string session_id = 2;
+  string stream_id = 3;
+  string text = 4;
+  double timestamp_start = 5;
+  double timestamp_end = 6;
+  float confidence = 7;
+  string speaker_id = 8;
+  string language = 9;
+  string asr_engine = 10;
+  bool is_final = 11;
+}
+
+// Represents a time range for queries and filtering.
+message TimestampRange {
+  double start = 1;
+  double end = 2;
+}
+
+// Health check messages.
+message HealthCheckRequest {
+  string service = 1;
+}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+}

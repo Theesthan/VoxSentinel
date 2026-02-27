@@ -1,0 +1,42 @@
+# Kubernetes Deployment manifest for the Ingestion service.
+# Manages RTSP/HLS stream connections and produces raw audio chunks.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-ingestion
+  labels:
+    app: transcriptguard
+    component: ingestion
+spec:
+  replicas: {{ .Values.ingestion.replicaCount }}
+  selector:
+    matchLabels:
+      app: transcriptguard
+      component: ingestion
+  template:
+    metadata:
+      labels:
+        app: transcriptguard
+        component: ingestion
+    spec:
+      containers:
+        - name: ingestion
+          image: "{{ .Values.ingestion.image.repository }}:{{ .Values.ingestion.image.tag }}"
+          imagePullPolicy: {{ .Values.ingestion.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.ingestion.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

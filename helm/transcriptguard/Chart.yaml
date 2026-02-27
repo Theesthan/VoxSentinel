@@ -1,0 +1,14 @@
+apiVersion: v2
+name: transcriptguard
+description: VoxSentinel (TranscriptGuard) - Real-time audio stream surveillance platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - transcription
+  - surveillance
+  - audio
+  - nlp
+  - asr
+maintainers:
+  - name: VoxSentinel Team

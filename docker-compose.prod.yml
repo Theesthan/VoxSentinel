@@ -1,0 +1,51 @@
+version: "3.9"
+
+# Production-like local environment overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+  api:
+    restart: always
+    environment:
+      TG_LOG_LEVEL: WARNING
+
+  ingestion:
+    restart: always
+
+  vad:
+    restart: always
+
+  asr:
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  nlp:
+    restart: always
+
+  diarization:
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  alerts:
+    restart: always
+
+  storage:
+    restart: always
+
+  dashboard:
+    restart: always
+
+  celery-worker:
+    restart: always

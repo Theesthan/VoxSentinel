@@ -1,0 +1,39 @@
+// Protobuf definitions for the ASR (Automatic Speech Recognition) service.
+// Defines streaming and unary RPCs for speech-to-text transcription.
+
+syntax = "proto3";
+
+package transcriptguard;
+
+import "transcriptguard/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.transcriptguard.proto.asr";
+
+// Request to transcribe an audio chunk.
+message TranscribeRequest {
+  AudioChunk audio_chunk = 1;
+  string engine = 2;           // Preferred ASR engine (e.g., "deepgram_nova2", "whisper_v3_turbo")
+  string language_hint = 3;    // Optional language hint (BCP-47)
+  bool enable_diarization = 4; // Whether to request inline diarization
+}
+
+// Response containing transcription results.
+message TranscribeResponse {
+  TranscriptSegment segment = 1;
+  float latency_ms = 2;
+  string engine_used = 3;
+  bool is_fallback = 4;       // True if a failover engine was used
+}
+
+// Streaming transcription for real-time audio.
+service ASRService {
+  // Unary transcription of a single audio chunk.
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+
+  // Bidirectional streaming for real-time transcription.
+  rpc StreamTranscribe(stream TranscribeRequest) returns (stream TranscribeResponse);
+
+  // Health check.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}

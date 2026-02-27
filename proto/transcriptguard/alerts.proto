@@ -1,0 +1,56 @@
+// Protobuf definitions for the Alert service.
+// Defines messages and RPCs for dispatching and querying alerts.
+
+syntax = "proto3";
+
+package transcriptguard;
+
+import "transcriptguard/common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.transcriptguard.proto.alerts";
+
+// Severity level for alerts.
+enum AlertSeverity {
+  ALERT_SEVERITY_UNSPECIFIED = 0;
+  LOW = 1;
+  MEDIUM = 2;
+  HIGH = 3;
+  CRITICAL = 4;
+}
+
+// Represents an alert triggered by keyword/sentiment/intent detection.
+message Alert {
+  string alert_id = 1;
+  string session_id = 2;
+  string stream_id = 3;
+  string rule_id = 4;
+  AlertSeverity severity = 5;
+  string trigger_text = 6;
+  string matched_keyword = 7;
+  float confidence = 8;
+  double timestamp = 9;
+  map<string, string> metadata = 10;
+}
+
+// Request to dispatch an alert to configured channels.
+message DispatchAlertRequest {
+  Alert alert = 1;
+  repeated string channels = 2;  // e.g., ["websocket", "slack", "webhook"]
+}
+
+// Response after alert dispatch.
+message DispatchAlertResponse {
+  bool success = 1;
+  repeated string dispatched_channels = 2;
+  repeated string failed_channels = 3;
+}
+
+// Alert service definition.
+service AlertService {
+  // Dispatch an alert to one or more channels.
+  rpc DispatchAlert(DispatchAlertRequest) returns (DispatchAlertResponse);
+
+  // Health check.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
