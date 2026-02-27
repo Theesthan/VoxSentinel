@@ -166,9 +166,12 @@ class TestMaybeFlushMetrics:
 
         proc._maybe_flush_metrics()
 
-        # Retrieve the gauge value.
-        sample = VAD_SPEECH_RATIO.labels(stream_id="s1")._value.get()
-        assert sample == pytest.approx(0.75, abs=0.01)
+        # Verify the gauge's .set() was called with the correct ratio.
+        # Note: labels() returns a shared mock, so prior tests may have
+        # accumulated calls.  We check only the most recent invocation.
+        gauge_label = VAD_SPEECH_RATIO.labels(stream_id="s1")
+        last_value = gauge_label.set.call_args_list[-1].args[0]
+        assert last_value == pytest.approx(0.75, abs=0.01)
 
 
 class TestProcessStreamLoop:
