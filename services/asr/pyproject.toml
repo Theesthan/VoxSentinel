@@ -6,12 +6,13 @@ build-backend = "hatchling.build"
 name = "voxsentinel-asr"
 version = "0.1.0"
 description = "ASR Engine Abstraction Layer for VoxSentinel — routes audio to pluggable ASR backends"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "tg-common",
     "deepgram-sdk>=3.0",
     "faster-whisper>=1.1",
     "websockets>=12.0",
+    "circuitbreaker>=2.0",
     "grpcio>=1.60",
     "grpcio-tools>=1.60",
     "numpy>=1.26",
@@ -41,3 +42,6 @@ line-length = 100
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/asr"]
