@@ -80,4 +80,5 @@ testpaths = [
     "services/nlp/tests",
     "services/diarization/tests",
     "services/alerts/tests",
+    "services/storage/tests",
 ]

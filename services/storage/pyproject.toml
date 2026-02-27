@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "voxsentinel-storage"
 version = "0.1.0"
 description = "Storage and indexing service for VoxSentinel — persists transcripts and indexes for search"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "tg-common",
     "sqlalchemy[asyncio]>=2.0",
@@ -36,3 +36,6 @@ line-length = 100
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/storage"]
