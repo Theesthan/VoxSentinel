@@ -1,11 +1,13 @@
 """
-Session data model for VoxSentinel.
+Session data model re-export for VoxSentinel.
 
-Defines the Pydantic model representing a stream session — a continuous
-recording period tied to a stream, tracking ASR backend used, segment
-counts, and alert counts.
+The ``Session`` model is defined in ``tg_common.models.stream`` alongside
+``Stream`` as both are tightly coupled.  This module re-exports ``Session``
+so that imports from ``tg_common.models.session`` remain valid.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from tg_common.models.stream import Session
+
+__all__ = ["Session"]

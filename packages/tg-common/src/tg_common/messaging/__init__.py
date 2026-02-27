@@ -5,3 +5,7 @@ This package provides Redis pub/sub client wrappers and Celery task
 definitions shared across all services for inter-service communication
 and background job processing.
 """
+
+from tg_common.messaging.redis_client import RedisClient
+
+__all__ = ["RedisClient"]

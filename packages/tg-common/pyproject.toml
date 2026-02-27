@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "tg-common"
 version = "0.1.0"
 description = "Shared models, configuration, and utilities for VoxSentinel"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
