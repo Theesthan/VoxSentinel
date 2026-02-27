@@ -47,6 +47,7 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "httpx>=0.27",
+    "tenacity>=8.2",
 ]
 
 [project.optional-dependencies]
@@ -78,4 +79,5 @@ testpaths = [
     "services/asr/tests",
     "services/nlp/tests",
     "services/diarization/tests",
+    "services/alerts/tests",
 ]

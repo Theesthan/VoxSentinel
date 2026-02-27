@@ -6,13 +6,14 @@ build-backend = "hatchling.build"
 name = "voxsentinel-alerts"
 version = "0.1.0"
 description = "Alert dispatch service for VoxSentinel — routes alerts to configured channels"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "tg-common",
     "httpx>=0.27",
     "slack-sdk>=3.30",
     "websockets>=12.0",
     "celery>=5.4",
+    "tenacity>=8.2",
     "structlog>=24.2",
     "prometheus-client>=0.20",
     "redis>=5.0",
@@ -30,10 +31,13 @@ dev = [
     "mypy>=1.10",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/alerts"]
+
 [tool.ruff]
-target-version = "py312"
+target-version = "py311"
 line-length = 100
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 strict = true
