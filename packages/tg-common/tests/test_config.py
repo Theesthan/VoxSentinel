@@ -34,30 +34,44 @@ def _clear_settings_cache() -> None:
 class TestSettingsDefaults:
     """Verify that ``Settings`` populates sane defaults when no env vars are set."""
 
+    @staticmethod
+    def _clean_env():
+        """Remove TG_ env vars so Settings reads only hardcoded defaults."""
+        import copy
+        return {k: v for k, v in os.environ.items() if not k.startswith("TG_")}
+
     def test_default_db_uri(self) -> None:
-        s = Settings()
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            s = Settings()
         assert s.db_uri == "postgresql+asyncpg://voxsentinel:changeme@localhost:5432/voxsentinel"
 
     def test_default_db_pool_size(self) -> None:
-        assert Settings().db_pool_size == 10
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            assert Settings().db_pool_size == 10
 
     def test_default_redis_url(self) -> None:
-        assert Settings().redis_url == "redis://localhost:6379/0"
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            assert Settings().redis_url == "redis://localhost:6379/0"
 
     def test_default_vad_threshold(self) -> None:
-        assert Settings().vad_threshold == 0.5
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            assert Settings().vad_threshold == 0.5
 
     def test_default_api_port(self) -> None:
-        assert Settings().api_port == 8000
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            assert Settings().api_port == 8000
 
     def test_default_log_level(self) -> None:
-        assert Settings().log_level == "INFO"
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            assert Settings().log_level == "INFO"
 
     def test_default_retention_days(self) -> None:
-        assert Settings().retention_days == 90
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            assert Settings().retention_days == 90
 
     def test_default_asr_backend(self) -> None:
-        assert Settings().asr_default_backend == "deepgram_nova2"
+        with patch.dict(os.environ, self._clean_env(), clear=True):
+            assert Settings().asr_default_backend == "deepgram_nova2"
 
 
 # ---------------------------------------------------------------------------

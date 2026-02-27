@@ -38,6 +38,7 @@ packages = ["src/ingestion"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+import_mode = "importlib"
 testpaths = ["tests"]
 
 [tool.mypy]

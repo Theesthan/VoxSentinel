@@ -3,7 +3,10 @@ __pycache__/
 *.pyc
 .env
 venv/
+.venv/
 *.egg-info/
+.coverage
+.pytest_cache/
 
 # Node / Frontend
 node_modules/
