@@ -1,0 +1,42 @@
+# Virtual environments
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+services/dashboard/node_modules/
+services/dashboard/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docs
+*.md
+!services/*/README.md
+LICENSE
+docs/
+
+# Tests (not needed in production images)
+**/tests/
+tests/
+pytest.ini
+
+# Helm / K8s
+helm/
+
+# Misc
+.env
+.env.*
+!.env.example
+scripts/
+exports/
+processed/
+junk/

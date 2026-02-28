@@ -1,18 +1,33 @@
-version: "3.9"
+# ─────────────────────────────────────────────────────────────────────────────
+# VoxSentinel — Development Environment
+# Usage:  docker compose up --build
+# Prod:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-common-env: &common-env
+  TG_DB_URI: postgresql+asyncpg://voxsentinel:changeme@postgres:5432/voxsentinel
+  TG_REDIS_URL: redis://redis:6379/0
+  TG_ES_URL: http://elasticsearch:9200
+  TG_CELERY_BROKER_URL: redis://redis:6379/1
+  TG_CELERY_RESULT_BACKEND: redis://redis:6379/2
+  TG_LOG_LEVEL: INFO
 
 services:
-  # ── Infrastructure ──
+  # ── Infrastructure ─────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6382:6379"
     volumes:
       - redis-data:/data
+    networks:
+      - voxnet
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
 
   postgres:
     image: timescale/timescaledb:latest-pg16
@@ -21,14 +36,17 @@ services:
       POSTGRES_PASSWORD: changeme
       POSTGRES_DB: voxsentinel
     ports:
-      - "5432:5432"
+      - "5436:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    networks:
+      - voxnet
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U voxsentinel"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
@@ -40,20 +58,48 @@ services:
       - "9200:9200"
     volumes:
       - es-data:/usr/share/elasticsearch/data
+    networks:
+      - voxnet
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
+      start_period: 30s
 
-  # ── Application Services ──
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - xpack.security.enabled=false
+    ports:
+      - "5601:5601"
+    networks:
+      - voxnet
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+
+  # ── Application Services ───────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: services/api/Dockerfile
     ports:
       - "8000:8000"
+    environment:
+      <<: *common-env
+      TG_API_HOST: "0.0.0.0"
+      TG_API_PORT: "8000"
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,102 +108,154 @@ services:
       elasticsearch:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   ingestion:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
+    ports:
+      - "8011:8001"
+    environment:
+      <<: *common-env
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   vad:
     build:
       context: .
       dockerfile: services/vad/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      <<: *common-env
+      TG_VAD_THRESHOLD: "0.5"
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8002/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8002/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   asr:
     build:
       context: .
       dockerfile: services/asr/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      <<: *common-env
+      TG_ASR_DEFAULT_BACKEND: deepgram_nova2
+      TG_ASR_FALLBACK_BACKEND: whisper_v3_turbo
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8003/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8003/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
 
   nlp:
     build:
       context: .
       dockerfile: services/nlp/Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      <<: *common-env
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8004/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8004/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   diarization:
     build:
       context: .
       dockerfile: services/diarization/Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      <<: *common-env
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8005/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8005/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   alerts:
     build:
       context: .
       dockerfile: services/alerts/Dockerfile
+    ports:
+      - "8006:8006"
+    environment:
+      <<: *common-env
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8006/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8006/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   storage:
     build:
       context: .
       dockerfile: services/storage/Dockerfile
+    ports:
+      - "8007:8007"
+    environment:
+      <<: *common-env
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       postgres:
         condition: service_healthy
@@ -166,10 +264,11 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8007/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8007/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   dashboard:
     build:
@@ -177,26 +276,43 @@ services:
       dockerfile: services/dashboard/Dockerfile
     ports:
       - "3000:80"
+    networks:
+      - voxnet
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:80/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   celery-worker:
     build:
       context: .
       dockerfile: services/alerts/Dockerfile
-    command: celery -A tg_common.messaging.celery_app worker --loglevel=info
+    command: celery -A tg_common.messaging.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      <<: *common-env
     env_file: .env
+    networks:
+      - voxnet
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tg_common.messaging.celery_app inspect ping --timeout 5 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  voxnet:
+    driver: bridge
 
 volumes:
   redis-data:
