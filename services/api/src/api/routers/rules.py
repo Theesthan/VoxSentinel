@@ -29,7 +29,7 @@ router = APIRouter(prefix="/rules", tags=["rules"])
 async def _publish_rules_updated(redis: Any) -> None:
     """Publish ``rules_updated`` so NLP hot-reloads within 5 seconds."""
     if redis is not None:
-        await redis.publish("rules_updated", {"event": "rules_updated"})
+        await redis.publish("rules_updated", '{"event": "rules_updated"}')
 
 
 @router.post("", status_code=201, response_model=RuleCreateResponse)

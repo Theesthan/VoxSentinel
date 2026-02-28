@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         import redis.asyncio as aioredis
 
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        redis_url = os.getenv("TG_REDIS_URL", os.getenv("REDIS_URL", "redis://localhost:6379/0"))
         redis = aioredis.from_url(redis_url, decode_responses=True)
     except Exception:  # pragma: no cover
         pass
@@ -49,8 +49,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
         db_url = os.getenv(
-            "DATABASE_URL",
-            "postgresql+asyncpg://vox:vox@localhost:5432/voxsentinel",
+            "TG_DB_URI",
+            os.getenv("DATABASE_URL", "postgresql+asyncpg://vox:vox@localhost:5432/voxsentinel"),
         )
         engine = create_async_engine(db_url, echo=False)
         app.state.db_session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         from elasticsearch import AsyncElasticsearch
 
-        es_url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
+        es_url = os.getenv("TG_ES_URL", os.getenv("ELASTICSEARCH_URL", "http://localhost:9200"))
         app.state.es_client = AsyncElasticsearch(es_url)
     except Exception:  # pragma: no cover
         app.state.es_client = None

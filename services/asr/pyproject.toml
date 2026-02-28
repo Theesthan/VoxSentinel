@@ -9,7 +9,7 @@ description = "ASR Engine Abstraction Layer for VoxSentinel — routes audio to 
 requires-python = ">=3.11"
 dependencies = [
     "tg-common",
-    "deepgram-sdk>=3.0",
+    "deepgram-sdk>=3.0,<4.0",
     "faster-whisper>=1.1",
     "websockets>=12.0",
     "circuitbreaker>=2.0",

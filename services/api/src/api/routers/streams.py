@@ -188,7 +188,8 @@ async def delete_stream(
     await db.commit()
 
     if redis is not None:
-        await redis.publish("stream_stopped", {"stream_id": str(stream_id)})
+        import json as _json
+        await redis.publish("stream_stopped", _json.dumps({"stream_id": str(stream_id)}))
 
 
 @router.post("/{stream_id}/pause", status_code=200)

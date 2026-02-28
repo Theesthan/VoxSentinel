@@ -51,14 +51,23 @@ async def search_transcripts(
     if date_filter:
         must.append({"range": {"timestamp": date_filter}})
 
-    es_body: dict[str, Any] = {
-        "query": {"bool": {"must": must}},
-        "highlight": {"fields": {"text": {}}},
-        "from": body.offset,
-        "size": body.limit,
-    }
+    query_body: dict[str, Any] = {"bool": {"must": must}}
+    highlight_body: dict[str, Any] = {"fields": {"text": {}}}
 
-    raw = await es.search(index="transcripts", body=es_body)
+    try:
+        raw = await es.search(
+            index="transcripts",
+            query=query_body,
+            highlight=highlight_body,
+            from_=body.offset,
+            size=body.limit,
+        )
+    except Exception as exc:
+        # Index may not exist yet (no transcripts indexed).
+        err_str = str(exc).lower()
+        if "index_not_found" in err_str or "no such index" in err_str:
+            return SearchResponse(results=[], total=0)
+        raise
 
     hits = raw.get("hits", {})
     total_val = hits.get("total", {})

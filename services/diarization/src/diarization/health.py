@@ -29,12 +29,11 @@ def configure(pipeline: object) -> None:
 async def health() -> JSONResponse:
     """Return service health and model readiness."""
     ready = getattr(_pipeline, "is_ready", False) if _pipeline else False
-    status_code = 200 if ready else 503
     return JSONResponse(
         content={
             "service": "diarization",
             "pipeline_ready": ready,
-            "status": "ok" if ready else "loading",
+            "status": "ok" if ready else "degraded",
         },
-        status_code=status_code,
+        status_code=200,
     )

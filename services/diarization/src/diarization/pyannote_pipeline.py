@@ -68,6 +68,8 @@ class PyannotePipeline:
         """Download / load the pyannote pipeline once (blocking).
 
         This should be called during service startup, **not** per-request.
+        If the Hugging Face token is missing or the model cannot be
+        downloaded, the service starts in degraded mode and logs a warning.
         """
         if self._pipeline is not None:
             return
@@ -75,10 +77,26 @@ class PyannotePipeline:
         import os
 
         token = self._hf_token or os.environ.get("TG_HF_TOKEN", "")
-        logger.info("pyannote_loading", model=MODEL_ID, device=self._device)
-        self._pipeline = Pipeline.from_pretrained(MODEL_ID, use_auth_token=token)
-        self._pipeline.to(torch.device(self._device))
-        logger.info("pyannote_loaded", model=MODEL_ID, device=self._device)
+        if not token:
+            logger.warning(
+                "pyannote_skipped",
+                reason="TG_HF_TOKEN not set – diarization will return empty results",
+            )
+            return
+
+        try:
+            logger.info("pyannote_loading", model=MODEL_ID, device=self._device)
+            self._pipeline = Pipeline.from_pretrained(MODEL_ID, token=token)
+            self._pipeline.to(torch.device(self._device))
+            logger.info("pyannote_loaded", model=MODEL_ID, device=self._device)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pyannote_load_failed",
+                error=str(exc),
+                hint="Ensure TG_HF_TOKEN is valid and you accepted the model terms "
+                "at https://hf.co/pyannote/speaker-diarization-3.1",
+            )
+            self._pipeline = None
 
     @property
     def is_ready(self) -> bool:

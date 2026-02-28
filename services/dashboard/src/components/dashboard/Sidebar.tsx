@@ -3,23 +3,24 @@ import {
   Radio,
   Bell,
   Search,
-  BarChart3,
-  Settings,
   Shield,
+  Send,
   ChevronLeft,
+  LogOut,
 } from "lucide-react";
+import { useAuth } from "@/lib/AuthContext";
 
 const navItems = [
-  { icon: Radio, label: "Live", path: "/dashboard" },
+  { icon: Radio, label: "Streams", path: "/dashboard" },
+  { icon: Shield, label: "Rules", path: "/dashboard/rules" },
   { icon: Bell, label: "Alerts", path: "/dashboard/alerts" },
+  { icon: Send, label: "Channels", path: "/dashboard/channels" },
   { icon: Search, label: "Search", path: "/dashboard/search" },
-  { icon: BarChart3, label: "Analytics", path: "/dashboard/analytics" },
-  { icon: Shield, label: "Audit", path: "/dashboard/audit" },
-  { icon: Settings, label: "Settings", path: "/dashboard/settings" },
 ];
 
 export default function Sidebar() {
   const location = useLocation();
+  const { logout } = useAuth();
 
   return (
     <aside className="w-14 md:w-52 border-r border-white/[0.06] flex flex-col shrink-0 transition-all">
@@ -46,7 +47,11 @@ export default function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 py-3">
         {navItems.map(({ icon: Icon, label, path }) => {
-          const isActive = location.pathname === path;
+          const isActive =
+            path === "/dashboard"
+              ? location.pathname === "/dashboard" ||
+                location.pathname === "/dashboard/streams"
+              : location.pathname.startsWith(path);
           return (
             <Link
               key={path}
@@ -64,8 +69,15 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* System status */}
-      <div className="p-3 md:p-4 border-t border-white/[0.06]">
+      {/* Logout + System status */}
+      <div className="p-3 md:p-4 border-t border-white/[0.06] space-y-3">
+        <button
+          onClick={logout}
+          className="flex items-center gap-2 text-xs text-white/30 hover:text-white/60 transition-colors w-full"
+        >
+          <LogOut className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+          <span className="hidden md:inline tracking-wide">Logout</span>
+        </button>
         <div className="flex items-center gap-2">
           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-slow" />
           <span className="text-[9px] text-white/25 tracking-[0.15em] uppercase hidden md:inline">

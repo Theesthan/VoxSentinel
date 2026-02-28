@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
+from sqlalchemy import text
 
 
 router = APIRouter(tags=["health"])
@@ -29,7 +30,7 @@ async def health_check(request: Request) -> HealthResponse:
         factory = getattr(request.app.state, "db_session_factory", None)
         if factory:
             async with factory() as session:
-                await session.execute("SELECT 1")
+                await session.execute(text("SELECT 1"))
             services["database"] = "healthy"
         else:
             services["database"] = "not_configured"
