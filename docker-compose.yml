@@ -176,15 +176,12 @@ services:
       context: .
       dockerfile: services/dashboard/Dockerfile
     ports:
-      - "8501:8501"
-    env_file: .env
+      - "3000:80"
     depends_on:
       api:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8501/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:80/healthz || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -87,7 +87,7 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 | PostgreSQL + TimescaleDB transcript storage | P0 |
 | Microsoft Presidio PII redaction | P0 |
 | Elasticsearch transcript indexing and search | P1 |
-| Operator dashboard (Streamlit prototype) | P1 |
+| Operator dashboard (React + Vite + shadcn/ui + Framer Motion) | P1 |
 | pyannote.audio 3.x diarization | P1 |
 | Hot-reloadable keyword/rule configuration via REST API | P1 |
 | Cryptographic audit hashing per segment | P1 |
@@ -104,7 +104,6 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 | Additional ASR backends (Lightning ASR, AssemblyAI, Parakeet TDT, Canary Qwen, Riva) | V2 |
 | Agent-assist hook system | V2 |
 | Teams, email, SMS, Signal, WhatsApp alert channels | V2 |
-| React/Next.js production dashboard | V2 |
 | Multi-language keyword bank routing | V2 |
 | Power BI / Grafana export APIs | V2 |
 | Kafka/Redpanda event bus (replacing direct queues) | V2 |
@@ -283,17 +282,22 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 
 **User Story:** As a security operator, I want a dashboard showing all my camera feeds' live transcripts with highlighted keywords so that I can monitor everything from one screen.
 
-**Priority:** P1 (Streamlit prototype for V1)
+**Priority:** P1 (React + Vite SPA)
 
 **Acceptance Criteria:**
+- Landing page with preloader sequence, masked text reveal hero, scroll-linked word opacity reveal, stats banner, sticky scroll pipeline section, and bento feature grid.
+- Design language: ultra-premium dark mode (#000000 bg), stark white typography, razor-thin borders (border-white/10), geometric sans-serif (Inter), brutal yet elegant layout.
+- Framer Motion animations: useScroll + useTransform for scroll-linked reveals, staggered fade-ins, text mask slides (y: 100% → 0%), AnimatePresence for preloader exit.
 - Dashboard displays a list of active streams with status indicators (active/paused/error).
-- Clicking a stream shows its live transcript with keyword highlights (color-coded by match type).
-- Alert panel shows recent alerts sorted by recency with severity indicators.
+- Clicking a stream shows its live transcript with keyword highlights (color-coded by match type and speaker).
+- Alert panel shows recent alerts sorted by recency with severity indicators and animated entrance.
 - Sentiment gauge shows real-time sentiment per stream (rolling 30 s average).
 - Search tab provides full-text search across historical transcripts with result highlighting.
-- Dashboard updates in real time via WebSocket connection.
+- Dashboard updates in real time via WebSocket connection proxied through nginx.
 - Dashboard is usable by a non-technical operator without training (clear labels, intuitive layout).
 - Responsive design supporting 1080p+ desktop screens (mobile not required for V1).
+- Built with Vite 6, React 19, TypeScript strict mode, Tailwind CSS 3.4, shadcn/ui (Button, Card, Badge), and Framer Motion 11.
+- Served via nginx multi-stage Docker build; SPA routing fallback; /api and /ws proxied to the API gateway.
 
 ---
 
@@ -372,8 +376,8 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - CI/CD pipeline with automated tests, linting, and container builds.
 
 ### Accessibility
-- Dashboard meets WCAG 2.1 AA for color contrast, keyboard navigation, and screen reader labels (V2 production dashboard).
-- V1 Streamlit prototype: best-effort accessibility.
+- Dashboard meets WCAG 2.1 AA for color contrast, keyboard navigation, and screen reader labels.
+- High-contrast monochrome design inherently meets AA contrast ratios for text.
 
 ---
 

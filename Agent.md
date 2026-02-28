@@ -78,13 +78,14 @@
                            ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    OPERATOR DASHBOARD                                    │
-│  Streamlit (V1) │ React/Next.js (V2)                                    │
-│  • Live transcript view with keyword highlighting                       │
-│  • Alert panel with severity indicators                                 │
+│  React 19 + Vite + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion│
+│  • Awwwards-tier landing page with scroll-triggered text reveals        │
+│  • Live transcript view with keyword highlighting & speaker colors      │
+│  • Alert panel with severity indicators & real-time animation           │
 │  • Sentiment gauges per stream/speaker                                  │
 │  • Historical transcript search                                         │
-│  • Stream management UI                                                 │
-│  Connected via WebSocket for real-time updates                          │
+│  • Stream management UI with brutalist bento grid layout                │
+│  Connected via WebSocket for real-time updates; nginx SPA proxy         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -378,26 +379,51 @@ transcriptguard/
 │   │       ├── test_search_router.py
 │   │       └── ...
 │   │
-│   └── dashboard/                     # Operator Dashboard
-│       ├── Dockerfile
-│       ├── pyproject.toml             # (Streamlit for V1)
-│       ├── src/
-│       │   └── dashboard/
-│       │       ├── __init__.py
-│       │       ├── app.py             # Streamlit main app
-│       │       ├── pages/
-│       │       │   ├── live_view.py   # Live transcript + alerts
-│       │       │   ├── search.py      # Historical search
-│       │       │   ├── analytics.py   # Charts and heatmaps
-│       │       │   └── settings.py    # Stream/rule management UI
-│       │       ├── components/
-│       │       │   ├── stream_card.py
-│       │       │   ├── alert_panel.py
-│       │       │   ├── sentiment_gauge.py
-│       │       │   └── transcript_viewer.py
-│       │       └── ws_client.py       # WebSocket client for live data
-│       └── tests/
-│           └── ...
+│   └── dashboard/                     # Operator Dashboard (React SPA)
+│       ├── Dockerfile                 # Multi-stage: node build → nginx serve
+│       ├── package.json               # React 19, Vite 6, Framer Motion 11
+│       ├── tsconfig.json
+│       ├── tsconfig.app.json
+│       ├── tsconfig.node.json
+│       ├── vite.config.ts
+│       ├── tailwind.config.ts
+│       ├── postcss.config.js
+│       ├── components.json            # shadcn/ui configuration
+│       ├── nginx.conf                 # SPA routing + API/WS reverse proxy
+│       ├── index.html
+│       ├── public/
+│       │   └── vite.svg
+│       └── src/
+│           ├── main.tsx               # React entry point
+│           ├── App.tsx                # BrowserRouter + Routes
+│           ├── index.css              # Tailwind base + dark theme
+│           ├── vite-env.d.ts
+│           ├── lib/
+│           │   └── utils.ts           # cn() utility (clsx + tailwind-merge)
+│           ├── hooks/
+│           │   └── useScrollReveal.ts  # Scroll-linked animation hooks
+│           ├── components/
+│           │   ├── ui/                # shadcn/ui primitives (brutalist-themed)
+│           │   │   ├── button.tsx
+│           │   │   ├── card.tsx
+│           │   │   └── badge.tsx
+│           │   ├── landing/           # Landing page sections
+│           │   │   ├── Preloader.tsx   # "Initializing... Access Granted."
+│           │   │   ├── Hero.tsx        # Masked text reveal hero
+│           │   │   ├── IntroReveal.tsx # Word-by-word scroll opacity reveal
+│           │   │   ├── StatsBanner.tsx # 4 stats with staggered entrance
+│           │   │   ├── StickyPipeline.tsx # Sticky left + scrolling right
+│           │   │   ├── FeaturesGrid.tsx   # Bento grid feature cards
+│           │   │   └── Footer.tsx
+│           │   └── dashboard/         # Dashboard operational UI
+│           │       ├── DashboardShell.tsx  # Sidebar + main layout
+│           │       ├── Sidebar.tsx
+│           │       ├── StreamCard.tsx
+│           │       ├── AlertPanel.tsx
+│           │       └── TranscriptViewer.tsx # Live transcript with highlights
+│           └── pages/
+│               ├── Landing.tsx        # / route — marketing landing
+│               └── Dashboard.tsx      # /dashboard/* — operational UI
 │
 ├── scripts/                           # Utility and deployment scripts
 │   ├── seed_db.py                     # Seed database with test data
@@ -438,8 +464,7 @@ transcriptguard/
 |-----------|----------|---------|-----------|
 | All backend services | Python | 3.12+ | Primary language for ML/NLP ecosystem; async support via asyncio; team expertise |
 | API Gateway | Python (FastAPI) | 3.12+ | Same language as services; FastAPI provides high-performance async HTTP + WebSocket |
-| Dashboard (V1) | Python (Streamlit) | 3.12+ | Rapid prototyping; built-in WebSocket, charts, and layout |
-| Dashboard (V2) | TypeScript (React/Next.js) | 18+ / 14+ | Production-quality frontend; deferred |
+| Dashboard | TypeScript (React + Vite) | 19 / 6 | Production SPA; Framer Motion animations; shadcn/ui components; nginx reverse proxy |
 
 ### Ingestion & Media
 
@@ -543,6 +568,22 @@ transcriptguard/
 | `prometheus-client` | 0.20+ | Prometheus metrics export | |
 | `structlog` | 24.2+ | Structured JSON logging | |
 | `opentelemetry-api` + `opentelemetry-sdk` | 1.24+ | Distributed tracing (V2) | |
+
+### Dashboard Frontend
+
+| Library | Version | Purpose | Notes |
+|---------|---------|---------|-------|
+| `react` | 19.x | UI component framework | |
+| `react-dom` | 19.x | DOM rendering | |
+| `react-router-dom` | 7.x | Client-side routing (/ landing, /dashboard/* operational UI) | |
+| `vite` | 6.x | Build tool and dev server | HMR, proxy to API/WS |
+| `typescript` | 5.7+ | Type safety | Strict mode enabled |
+| `tailwindcss` | 3.4+ | Utility-first CSS framework | Dark mode (#000), monochrome palette |
+| `framer-motion` | 11.x | Animation library | useScroll, useTransform, masked reveals, staggered fade-ins |
+| `@radix-ui/react-slot` | 1.x | Composition primitive for shadcn/ui Button | |
+| `class-variance-authority` | 0.7+ | Component variant management | Used by shadcn/ui primitives |
+| `clsx` + `tailwind-merge` | 2.x / 2.x | Conditional class merging | cn() utility |
+| `lucide-react` | 0.468+ | Icon library | Thin-stroke icons matching brutalist aesthetic |
 
 ### Explicitly Discouraged / Forbidden Libraries
 | Library | Reason |

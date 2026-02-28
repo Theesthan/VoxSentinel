@@ -1,14 +1,20 @@
-FROM python:3.12-slim AS builder
+# ── Stage 1: Build ──────────────────────────────────────────────
+FROM node:20-alpine AS builder
 WORKDIR /app
-COPY packages/tg-common /app/packages/tg-common
-COPY services/dashboard /app/services/dashboard
-RUN pip install --no-cache-dir /app/packages/tg-common /app/services/dashboard
 
-FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-COPY services/dashboard/src /app/src
-EXPOSE 8501
-CMD ["streamlit", "run", "src/dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Install dependencies first (layer cache)
+COPY services/dashboard/package.json services/dashboard/package-lock.json* ./
+RUN npm ci --ignore-scripts
+
+# Copy source and build
+COPY services/dashboard/ .
+RUN npm run build
+
+# ── Stage 2: Serve ──────────────────────────────────────────────
+FROM nginx:1.27-alpine
+RUN rm /etc/nginx/conf.d/default.conf
+COPY services/dashboard/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
