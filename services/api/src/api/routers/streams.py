@@ -7,6 +7,7 @@ and resuming audio streams.
 
 from __future__ import annotations
 
+import json
 import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -69,7 +70,7 @@ async def create_stream(
     if redis is not None:
         await redis.publish(
             "stream_started",
-            {"stream_id": str(stream_id), "session_id": str(session_id)},
+            json.dumps({"stream_id": str(stream_id), "session_id": str(session_id)}),
         )
 
     return StreamCreateResponse(

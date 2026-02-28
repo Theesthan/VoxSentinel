@@ -58,6 +58,10 @@ dev = [
     "pytest-mock>=3.14",
     "ruff>=0.4",
     "mypy>=1.10",
+    "testcontainers[postgres,redis,elasticsearch]>=4.4",
+    "gtts>=2.5",
+    "pydub>=0.25",
+    "elasticsearch[async]>=8.13",
 ]
 
 [tool.ruff]
@@ -82,4 +86,13 @@ testpaths = [
     "services/alerts/tests",
     "services/storage/tests",
     "services/api/tests",
+    "tests/integration",
+]
+markers = [
+    "integration: marks tests as integration tests (require Docker)",
+]
+filterwarnings = [
+    # testcontainers' RedisContainer still uses the deprecated @wait_container_is_ready
+    # decorator internally — we already bypass it with our own TCP readiness check.
+    "ignore::DeprecationWarning:testcontainers.redis",
 ]

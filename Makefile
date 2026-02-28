@@ -22,7 +22,7 @@ test-unit:
 	.venv/Scripts/python -m pytest --rootdir=. -c pyproject.toml -v --cov --cov-report=term-missing
 
 test-integration:
-	.venv/Scripts/python -m pytest tests/integration/ -v --cov --cov-report=term-missing
+	.venv/Scripts/python -m pytest tests/integration/ -v -m integration --cov --cov-report=term-missing -x --tb=short
 
 test-e2e:
 	.venv/Scripts/python -m pytest tests/e2e/ -v
