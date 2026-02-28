@@ -7,11 +7,11 @@ formatting, and redaction accuracy for various PII types.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from nlp.pii_redactor import ENTITY_PLACEHOLDER_MAP, PiiRedactor, RedactionResult
+from nlp.pii_redactor import ENTITY_PLACEHOLDER_MAP, PiiRedactor
 
 
 class TestPiiRedactor:

@@ -20,8 +20,8 @@ from typing import Any, AsyncIterator
 import structlog
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import Counter, Histogram, make_asgi_app
 
-from tg_common.config import get_settings
 from tg_common.messaging.redis_client import RedisClient
 
 from diarization import health
@@ -29,6 +29,17 @@ from diarization.pyannote_pipeline import PyannotePipeline, SpeakerSegment
 from diarization.speaker_merger import SpeakerMerger
 
 logger = structlog.get_logger()
+
+# ── Prometheus metrics ──
+diarization_segments_total = Counter(
+    "diarization_segments_total",
+    "Total speaker segments produced by diarization",
+    ["stream_id"],
+)
+diarization_processing_seconds = Histogram(
+    "diarization_processing_seconds",
+    "Time spent running diarization on an audio window",
+)
 
 # ── Constants ─────────────────────────────────────────────────
 ACCUMULATE_S: float = 3.0
@@ -194,6 +205,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="VoxSentinel Diarization Service", lifespan=lifespan)
 app.include_router(health.router)
+app.mount("/metrics", make_asgi_app())
 
 
 if __name__ == "__main__":

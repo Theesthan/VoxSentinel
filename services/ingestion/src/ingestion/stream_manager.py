@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import uuid
-from typing import Any
 
 import structlog
 from prometheus_client import Counter

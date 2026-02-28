@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -205,7 +205,7 @@ class TestWriteSegment:
         writer = TranscriptWriter(session_factory=mock_db_session_factory)
         seg = _make_segment()
 
-        result = await writer.write_segment(seg)
+        await writer.write_segment(seg)
 
         mock_db_session_factory.assert_called_once()
         mock_session.add.assert_called_once()

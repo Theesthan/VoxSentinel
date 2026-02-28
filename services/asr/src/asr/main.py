@@ -171,8 +171,8 @@ def _start_router(stream_id: str) -> None:
     _stop_events[stream_id] = stop_event
 
     asr_router = ASRRouter(
-        redis_client=_redis_client,  # type: ignore[arg-type]
-        failover_manager=_failover_manager,  # type: ignore[arg-type]
+        redis_client=_redis_client,
+        failover_manager=_failover_manager,
     )
     task = asyncio.create_task(
         asr_router.process_stream(stream_id, stop_event=stop_event),

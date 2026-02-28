@@ -88,12 +88,12 @@ class SpeakerMerger:
         # 1. Containment: find segment whose range covers start_ms.
         idx = bisect.bisect_right(self._starts, start_ms) - 1
         if idx >= 0 and self._segments[idx].end_ms >= start_ms:
-            return self._segments[idx].speaker_id
+            return str(self._segments[idx].speaker_id)
 
         # Check the next segment as well (in case start_ms falls
         # exactly on or after a boundary).
         if idx + 1 < len(self._segments) and self._segments[idx + 1].start_ms <= end_ms:
-            return self._segments[idx + 1].speaker_id
+            return str(self._segments[idx + 1].speaker_id)
 
         # 2. Nearest-segment fallback (by midpoint distance).
         mid = (start_ms + end_ms) // 2
@@ -101,11 +101,11 @@ class SpeakerMerger:
             self._segments,
             key=lambda s: min(abs(s.start_ms - mid), abs(s.end_ms - mid)),
         )
-        return best_seg.speaker_id
+        return str(best_seg.speaker_id)
 
     def merge(
         self,
-        tokens: list[dict],
+        tokens: list[dict[str, object]],
     ) -> list[EnrichedToken]:
         """Enrich a list of raw token dicts with speaker labels.
 
@@ -120,17 +120,17 @@ class SpeakerMerger:
         """
         enriched: list[EnrichedToken] = []
         for tok in tokens:
-            start = int(tok.get("start_ms", 0))
-            end = int(tok.get("end_ms", 0))
+            start = int(tok.get("start_ms", 0))  # type: ignore[call-overload]
+            end = int(tok.get("end_ms", 0))  # type: ignore[call-overload]
             speaker = self.assign_speaker(start, end)
             enriched.append(
                 EnrichedToken(
-                    text=tok.get("text", ""),
+                    text=str(tok.get("text", "")),
                     is_final=bool(tok.get("is_final", False)),
                     start_ms=start,
                     end_ms=end,
-                    confidence=float(tok.get("confidence", 0.0)),
-                    language=tok.get("language", "en"),
+                    confidence=float(tok.get("confidence", 0.0)),  # type: ignore[arg-type]
+                    language=str(tok.get("language", "en")),
                     speaker_id=speaker,
                 )
             )

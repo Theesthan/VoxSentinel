@@ -121,7 +121,7 @@ def _start_processor(stream_id: str) -> None:
 
     processor = VADProcessor(
         vad_model=get_vad_model(),
-        redis_client=_redis_client,  # type: ignore[arg-type]
+        redis_client=_redis_client,
     )
     task = asyncio.create_task(
         processor.process_stream(stream_id, stop_event=stop_event),

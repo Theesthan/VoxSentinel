@@ -75,7 +75,7 @@ class KeywordEngine:
         ]
 
         self._aho_index.build(exact_rules)
-        errors = self._regex_matcher.load_rules(regex_rules)
+        errors: list[str] = self._regex_matcher.load_rules(regex_rules)
         # Fuzzy rules are passed per-call; store them for later
         self._fuzzy_rules = fuzzy_rules
 
@@ -126,7 +126,7 @@ class KeywordEngine:
 
         # 1) Aho-Corasick exact matches
         for hit in self._aho_index.search(window_text):
-            rule = self._rule_map.get(hit.rule_id)
+            _rule = self._rule_map.get(hit.rule_id)  # reserved for future severity lookup
             events.append(
                 KeywordMatchEvent(
                     keyword=hit.keyword,

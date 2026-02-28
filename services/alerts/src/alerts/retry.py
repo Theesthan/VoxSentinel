@@ -20,7 +20,7 @@ _DEFAULT_COUNTDOWN = 5  # seconds — doubles each retry
 _DEFAULT_BACKOFF = 2
 
 
-@shared_task(
+@shared_task(  # type: ignore[untyped-decorator]
     bind=True,
     name="alerts.retry_failed_alert",
     max_retries=_MAX_RETRIES,
@@ -46,7 +46,6 @@ def retry_failed_alert(
         ``True`` if the delivery succeeded, ``False`` if retries are
         exhausted.
     """
-    import asyncio  # local import to keep module importable without event loop
 
     from tg_common.models.alert import Alert
 

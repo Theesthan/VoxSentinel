@@ -9,7 +9,7 @@ cooldown period unless surrounding context changes by more than
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 DEFAULT_COOLDOWN_S: float = 10.0
 CONTEXT_CHANGE_THRESHOLD: float = 0.30

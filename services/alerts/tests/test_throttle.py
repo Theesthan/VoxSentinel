@@ -7,9 +7,8 @@ and overflow logging behavior.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-import pytest
 
 from alerts.throttle import AlertThrottle
 
@@ -56,7 +55,6 @@ class TestDeduplication:
     async def test_different_keywords_are_independent(
         self, mock_redis, stream_id
     ) -> None:
-        call_count = 0
 
         async def _set_side_effect(key, val, **kw):
             return True  # always new

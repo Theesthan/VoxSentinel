@@ -11,13 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 import structlog
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import Counter, Histogram, make_asgi_app
 
-from tg_common.config import get_settings
 from tg_common.messaging.redis_client import RedisClient
 from tg_common.models import TranscriptToken
 
@@ -29,10 +29,26 @@ from nlp.sentiment_engine import SentimentEngine
 
 logger = structlog.get_logger()
 
+# ── Prometheus metrics ──
+nlp_tokens_processed_total = Counter(
+    "nlp_tokens_processed_total",
+    "Total transcript tokens processed by the NLP service",
+    ["stream_id"],
+)
+nlp_keyword_matches_total = Counter(
+    "nlp_keyword_matches_total",
+    "Total keyword matches detected",
+    ["stream_id", "match_type"],
+)
+nlp_processing_duration_seconds = Histogram(
+    "nlp_processing_duration_seconds",
+    "Time spent processing a single token through NLP pipelines",
+)
+
 # ── Stream key prefix ──
 # After diarization enrichment, NLP consumes enriched_tokens instead of
 # raw transcript_tokens.  Set the env-var TG_NLP_INPUT_STREAM to override.
-import os as _os
+import os as _os  # noqa: E402
 
 NLP_INPUT_STREAM_PREFIX: str = _os.environ.get(
     "TG_NLP_INPUT_STREAM", "enriched_tokens"
@@ -213,6 +229,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="VoxSentinel NLP Service", lifespan=lifespan)
 app.include_router(health.router)
+app.mount("/metrics", make_asgi_app())
 
 
 if __name__ == "__main__":

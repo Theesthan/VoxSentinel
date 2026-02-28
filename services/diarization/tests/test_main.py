@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -15,7 +15,6 @@ from diarization.main import (
     _enrich_loop,
     _get_merger,
     _mergers,
-    _latest_segments,
     app,
 )
 
@@ -62,7 +61,7 @@ class TestDiarizeLoop:
             call_count += 1
             if call_count <= 2:
                 return [(
-                    f"speech_chunks:s1",
+                    "speech_chunks:s1",
                     [
                         (f"{call_count}-0", {"data": chunk}),
                     ],

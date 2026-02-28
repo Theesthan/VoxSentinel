@@ -11,7 +11,6 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 RULE_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"

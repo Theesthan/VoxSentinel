@@ -8,17 +8,29 @@ health and metrics endpoints.
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import structlog
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import Counter, make_asgi_app
 
 from .health import router as health_router
 
 logger = structlog.get_logger()
+
+# ── Prometheus metrics ──
+alerts_dispatched_total = Counter(
+    "alerts_dispatched_total",
+    "Total alerts dispatched by the alert service",
+    ["channel", "severity"],
+)
+alerts_dispatch_errors_total = Counter(
+    "alerts_dispatch_errors_total",
+    "Total alert dispatch failures",
+    ["channel"],
+)
 
 
 @asynccontextmanager
@@ -33,6 +45,7 @@ def create_app() -> FastAPI:
     """Build and return the FastAPI application."""
     app = FastAPI(title="VoxSentinel Alerts Service", lifespan=lifespan)
     app.include_router(health_router)
+    app.mount("/metrics", make_asgi_app())
     return app
 
 

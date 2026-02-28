@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import json
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
-import pytest
 
-from tg_common.models.alert import Alert, AlertType, MatchType, Severity
+from tg_common.models.alert import AlertType, MatchType, Severity
 from alerts.dispatcher import (
     AlertDispatcher,
     _keyword_event_to_alert,

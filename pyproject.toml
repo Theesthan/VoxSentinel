@@ -71,6 +71,8 @@ line-length = 100
 [tool.mypy]
 python_version = "3.12"
 strict = true
+explicit_package_bases = true
+exclude = ["tests/", "conftest\\.py$"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

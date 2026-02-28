@@ -8,7 +8,7 @@ on each new TranscriptToken arrival.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 DEFAULT_WINDOW_SECONDS: float = 10.0

@@ -7,11 +7,8 @@ integration.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from tg_common.models.alert import Alert, AlertType, MatchType, Severity
 from alerts.channels.slack_channel import SlackChannel, _format_slack_blocks

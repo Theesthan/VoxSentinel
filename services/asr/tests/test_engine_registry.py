@@ -14,7 +14,6 @@ from tg_common.models import TranscriptToken
 
 from asr.engine_base import ASREngine
 from asr.engine_registry import (
-    _REGISTRY,
     clear_registry,
     get_engine_class,
     list_engines,

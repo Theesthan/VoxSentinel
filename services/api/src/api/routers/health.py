@@ -7,12 +7,10 @@ database, Elasticsearch, Redis, and ASR backends.
 
 from __future__ import annotations
 
-from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from api.dependencies import get_db_session, get_es_client, get_redis
 
 router = APIRouter(tags=["health"])
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import numpy as np
 import structlog
@@ -28,7 +29,7 @@ _BYTES_PER_SAMPLE = 2
 _SAMPLE_RATE = 16_000
 
 
-class WhisperV3TurboEngine(ASREngine):
+class WhisperV3TurboEngine(ASREngine):  # type: ignore[misc]
     """Whisper V3 Turbo local-inference ASR engine.
 
     Accumulates PCM audio in an internal buffer.  Once the buffer

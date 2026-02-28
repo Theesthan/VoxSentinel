@@ -8,7 +8,6 @@ fixtures for database sessions, Redis clients, and ES clients.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -40,7 +39,6 @@ def postgres_container() -> Iterator[PostgresContainer]:
     approach, which can trigger ``500 Internal Server Error`` on Docker
     Desktop for Windows (named-pipe transport).
     """
-    import socket
     import time
 
     pg = PostgresContainer(
@@ -54,7 +52,7 @@ def postgres_container() -> Iterator[PostgresContainer]:
     pg.start()
 
     # Wait for TCP connectivity + successful psycopg2 SELECT 1
-    host = pg.get_container_host_ip()
+    _host = pg.get_container_host_ip()  # noqa: F841 — called for side-effects
     port = int(pg.get_exposed_port(5432))
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -94,7 +92,7 @@ def redis_container() -> Iterator[RedisContainer]:
     r._connect = lambda: None  # type: ignore[assignment]
     r.start()
 
-    host = r.get_container_host_ip()
+    _host = r.get_container_host_ip()  # noqa: F841 — called for side-effects
     port = int(r.get_exposed_port(6379))
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:

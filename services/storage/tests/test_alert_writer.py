@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -140,7 +139,7 @@ class TestWriteAlert:
         writer = AlertWriter(session_factory=mock_db_session_factory)
         alert = _make_alert()
 
-        result = await writer.write_alert(alert)
+        await writer.write_alert(alert)
 
         mock_db_session_factory.assert_called_once()
         mock_session.add.assert_called_once()

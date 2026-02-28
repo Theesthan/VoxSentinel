@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from diarization.pyannote_pipeline import (
-    BYTES_PER_SAMPLE,
-    MODEL_ID,
     SAMPLE_RATE,
     PyannotePipeline,
     SpeakerSegment,
@@ -24,7 +21,7 @@ def _make_pcm(duration_s: float = 1.0) -> bytes:
 
 
 # Reusable fake annotation components from conftest
-import sys
+import sys  # noqa: E402
 _pa = sys.modules["pyannote.audio"]
 _FakeAnnotation = _pa._FakeAnnotation
 _FakeTurn = _pa._FakeTurn

@@ -8,7 +8,7 @@ hashes, Merkle proofs, and audit anchor records.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException

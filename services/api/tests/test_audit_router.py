@@ -12,7 +12,6 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 SEGMENT_ID = "99999999-8888-7777-6666-555544443333"

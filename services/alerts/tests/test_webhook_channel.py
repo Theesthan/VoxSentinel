@@ -7,10 +7,9 @@ and error handling for failed deliveries.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
-import pytest
 
 from alerts.channels.webhook_channel import WebhookChannel
 

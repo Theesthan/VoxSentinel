@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -102,7 +103,7 @@ class StreamORM(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now,
     )
-    metadata_: Mapped[dict | None] = mapped_column(
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column(
         "metadata", JSONB, nullable=True,
     )
 
@@ -166,7 +167,7 @@ class TranscriptSegmentORM(Base):
     end_offset_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     text_redacted: Mapped[str] = mapped_column(Text, nullable=False, default="")
     text_original: Mapped[str | None] = mapped_column(Text, nullable=True)
-    word_timestamps: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    word_timestamps: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
     language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
     asr_backend: Mapped[str] = mapped_column(
         String(100), nullable=False, default="deepgram_nova2",
@@ -174,8 +175,8 @@ class TranscriptSegmentORM(Base):
     asr_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     sentiment_label: Mapped[str | None] = mapped_column(String(20), nullable=True)
     sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    intent_labels: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    pii_entities_found: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    intent_labels: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    pii_entities_found: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     segment_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utc_now,
@@ -216,10 +217,10 @@ class AlertORM(Base):
     surrounding_context: Mapped[str] = mapped_column(Text, nullable=False, default="")
     speaker_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     channel: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    sentiment_scores: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    sentiment_scores: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     asr_backend_used: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    delivered_to: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    delivery_status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    delivered_to: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    delivery_status: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     deduplicated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utc_now,
@@ -263,10 +264,10 @@ class AlertChannelConfigORM(Base):
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
     )
     channel_type: Mapped[str] = mapped_column(CHANNEL_TYPE_ENUM, nullable=False)
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     min_severity: Mapped[str] = mapped_column(SEVERITY_ENUM, nullable=False, default="low")
-    alert_types: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    stream_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    alert_types: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    stream_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utc_now,

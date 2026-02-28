@@ -10,12 +10,12 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from circuitbreaker import CircuitBreakerError
 
-from tg_common.models import TranscriptToken, WordTimestamp
+from tg_common.models import TranscriptToken
 
 from asr.engine_base import ASREngine
 from asr.failover import ASRCircuitBreaker, ASRFailoverManager, CircuitState

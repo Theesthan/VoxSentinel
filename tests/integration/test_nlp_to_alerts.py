@@ -13,15 +13,13 @@ Redis-publish contract.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 import redis.asyncio as aioredis
 
-from tg_common.models import KeywordMatchEvent, KeywordRule, MatchType, RuleMatchType
+from tg_common.models import KeywordRule, RuleMatchType
 from tg_common.models.alert import Severity
 
 

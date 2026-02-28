@@ -6,7 +6,6 @@ Validates text accumulation, eviction based on time, and clearing.
 
 from __future__ import annotations
 
-import pytest
 
 from nlp.sliding_window import SlidingWindow
 

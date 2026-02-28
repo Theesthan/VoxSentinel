@@ -8,4 +8,3 @@ request counters, latency histograms, and service-specific gauges.
 
 from __future__ import annotations
 
-from prometheus_client import Counter, Histogram

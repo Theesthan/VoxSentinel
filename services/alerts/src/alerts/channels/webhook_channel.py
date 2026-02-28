@@ -7,6 +7,8 @@ webhook URLs with retry logic (3 attempts, exponential backoff).
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import structlog
 from tenacity import (
@@ -64,7 +66,7 @@ class WebhookChannel(AlertChannel):
 
     # ── delivery ──
 
-    async def _post_with_retry(self, payload: dict) -> httpx.Response:
+    async def _post_with_retry(self, payload: dict[str, Any]) -> httpx.Response:
         """POST *payload* to the configured URL with retry.
 
         The retry decorator is built dynamically so ``max_attempts`` can be

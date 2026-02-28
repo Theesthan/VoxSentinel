@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from types import ModuleType
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
 
 import pytest
@@ -50,12 +48,11 @@ os.environ.setdefault("TG_API_KEY", "test-api-key-1234")
 
 # ─── Imports (after mocks) ───
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
-from api.dependencies import get_db_session, get_es_client, get_redis
-from api.routers import (
+from api.dependencies import get_db_session, get_es_client, get_redis  # noqa: E402
+from api.routers import (  # noqa: E402
     alert_channels,
     alerts,
     audit,

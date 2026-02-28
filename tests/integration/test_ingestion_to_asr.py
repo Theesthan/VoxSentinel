@@ -200,7 +200,6 @@ class TestIngestionToASR:
 
         stream_id = str(uuid.uuid4())
         audio_key = f"audio_chunks:{stream_id}"
-        token_key = f"transcript_tokens:{stream_id}"
 
         stop = asyncio.Event()
         consumer_task = asyncio.create_task(

@@ -9,7 +9,6 @@ and Boolean search queries.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 import structlog
 from elasticsearch import AsyncElasticsearch
@@ -67,7 +66,7 @@ class ESIndexer:
         self,
         segment: TranscriptSegment,
         segment_hash: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Index a single transcript segment.
 
         Only the *redacted* text is stored in ES.  Returns the ES
@@ -102,7 +101,7 @@ class ESIndexer:
         session_id: str | None = None,
         stream_id: str | None = None,
         size: int = 20,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Full-text search across indexed transcripts.
 
         Supports phrase queries and highlights matching text.

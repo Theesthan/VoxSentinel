@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

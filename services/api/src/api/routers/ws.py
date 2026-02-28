@@ -8,7 +8,6 @@ alert events, and sentiment updates per stream and cross-stream.
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 from uuid import UUID
 

@@ -8,4 +8,3 @@ background processing jobs. Uses Redis as broker and result backend.
 
 from __future__ import annotations
 
-from celery import Celery

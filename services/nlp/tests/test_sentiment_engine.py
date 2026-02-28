@@ -7,12 +7,12 @@ alert triggering on persistent negative sentiment.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
 
-from nlp.sentiment_engine import SentimentEngine, SentimentResult
+from nlp.sentiment_engine import SentimentEngine
 
 STREAM_ID = UUID("12345678-1234-5678-1234-567812345678")
 SESSION_ID = UUID("87654321-4321-8765-4321-876543218765")

@@ -8,9 +8,7 @@ change detection, and correct suppression behavior.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
-import pytest
 
 from nlp.deduplication import Deduplicator, _jaccard_distance
 

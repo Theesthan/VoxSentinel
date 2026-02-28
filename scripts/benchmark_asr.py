@@ -8,7 +8,6 @@ Usage:
 """
 
 import argparse
-import time
 
 
 def parse_args() -> argparse.Namespace:

@@ -105,9 +105,9 @@ class RedisClient:
         Returns:
             The auto-generated entry ID.
         """
-        entry_id: str = await self.redis.xadd(  # type: ignore[assignment]
+        entry_id: str = await self.redis.xadd(
             stream,
-            fields,
+            fields,  # type: ignore[arg-type]
             maxlen=maxlen,
             approximate=True if maxlen else False,
         )
@@ -130,8 +130,8 @@ class RedisClient:
         Returns:
             A list of ``[stream_key, [(entry_id, fields), ...]]`` tuples.
         """
-        result: list[Any] = await self.redis.xread(  # type: ignore[assignment]
-            streams,
+        result: list[Any] = await self.redis.xread(
+            streams,  # type: ignore[arg-type]
             count=count,
             block=block,
         )
@@ -146,6 +146,6 @@ class RedisClient:
             ``True`` if Redis responds, ``False`` otherwise.
         """
         try:
-            return bool(await self.redis.ping())
+            return bool(await self.redis.ping())  # type: ignore[misc]
         except Exception:  # noqa: BLE001
             return False

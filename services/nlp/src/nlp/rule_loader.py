@@ -103,7 +103,7 @@ class RuleLoader:
 
         # Parse into KeywordRule models and reload
         rules = [KeywordRule.model_validate(r) for r in raw_rules]
-        errors = self._engine.load_rules(rules)
+        errors: list[str] = self._engine.load_rules(rules)
         self._rules_hash = new_hash
 
         logger.info(
@@ -121,7 +121,7 @@ class RuleLoader:
         Returns:
             List of regex compilation error messages (if any).
         """
-        errors = self._engine.load_rules(rules)
+        errors: list[str] = self._engine.load_rules(rules)
         rules_json = json.dumps([r.model_dump(mode="json") for r in rules], sort_keys=True, default=str)
         self._rules_hash = hashlib.sha256(rules_json.encode()).hexdigest()
         return errors

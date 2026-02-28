@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
-import pytest
 
 from tg_common.models.transcript import TranscriptSegment
 
@@ -44,7 +43,7 @@ class TestIndexSegment:
         indexer = ESIndexer(mock_es_client)
         seg = _make_segment()
 
-        resp = await indexer.index_segment(seg)
+        await indexer.index_segment(seg)
 
         mock_es_client.index.assert_awaited_once()
         call_kwargs = mock_es_client.index.call_args.kwargs

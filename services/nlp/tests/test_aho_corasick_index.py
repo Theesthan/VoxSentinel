@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-import pytest
 
 from nlp.aho_corasick_index import AhoCorasickIndex
 

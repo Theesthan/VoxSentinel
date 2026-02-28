@@ -65,14 +65,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         now = time.time()
         window_start = now - self._window
 
-        pipe = self._redis.pipeline()
+        pipe = self._redis.pipeline()  # type: ignore[union-attr]
         pipe.zremrangebyscore(bucket, 0, window_start)
         pipe.zadd(bucket, {str(now): now})
         pipe.zcard(bucket)
         pipe.expire(bucket, self._window)
         results = await pipe.execute()
         count = results[2]
-        return count <= self._limit
+        return bool(count <= self._limit)
 
     def _check_memory(self, bucket: str) -> bool:
         """Simple in-memory sliding window (for dev/tests)."""

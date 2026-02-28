@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from vad.vad_processor import VADProcessor, VAD_SPEECH_RATIO, _METRIC_WINDOW_S
+from vad.vad_processor import VADProcessor, VAD_SPEECH_RATIO
 
 
 # ── helpers ──

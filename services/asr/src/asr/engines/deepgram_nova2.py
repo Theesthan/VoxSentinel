@@ -23,7 +23,7 @@ from asr.engine_base import ASREngine
 logger = structlog.get_logger()
 
 
-class DeepgramNova2Engine(ASREngine):
+class DeepgramNova2Engine(ASREngine):  # type: ignore[misc]
     """Deepgram Nova-2 streaming ASR engine.
 
     Opens a WebSocket connection to the Deepgram Nova-2 API and

@@ -8,6 +8,7 @@ incoming webhook or Slack bot API.
 from __future__ import annotations
 
 from datetime import timezone
+from typing import Any
 
 import structlog
 from slack_sdk.webhook.async_client import AsyncWebhookClient
@@ -19,7 +20,7 @@ from .base import AlertChannel
 logger = structlog.get_logger()
 
 
-def _format_slack_blocks(alert: Alert) -> list[dict]:
+def _format_slack_blocks(alert: Alert) -> list[dict[str, Any]]:
     """Build Slack Block Kit blocks for *alert*.
 
     Format:
@@ -38,7 +39,7 @@ def _format_slack_blocks(alert: Alert) -> list[dict]:
         f"`{ts_str}`"
     )
     context_snippet = alert.surrounding_context[:300] if alert.surrounding_context else "(no context)"
-    blocks: list[dict] = [
+    blocks: list[dict[str, Any]] = [
         {
             "type": "section",
             "text": {"type": "mrkdwn", "text": header},

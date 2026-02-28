@@ -8,7 +8,6 @@ and validation constraints work correctly via pydantic-settings.
 from __future__ import annotations
 
 import os
-from functools import lru_cache
 from unittest.mock import patch
 
 import pytest
@@ -37,7 +36,6 @@ class TestSettingsDefaults:
     @staticmethod
     def _clean_env():
         """Remove TG_ env vars so Settings reads only hardcoded defaults."""
-        import copy
         return {k: v for k, v in os.environ.items() if not k.startswith("TG_")}
 
     def test_default_db_uri(self) -> None:

@@ -120,7 +120,7 @@ class SentimentEngine:
             return SentimentResult(label="NEUTRAL", score=0.0), None
 
         # Run inference off the event loop
-        raw = await asyncio.to_thread(self._pipeline, text)
+        raw: list[dict[str, object]] = await asyncio.to_thread(self._pipeline, text)  # type: ignore[arg-type]
         result = self._parse_result(raw)
 
         # Normalise label to lowercase
@@ -160,7 +160,7 @@ class SentimentEngine:
             entry = raw[0]
             return SentimentResult(
                 label=str(entry.get("label", "NEUTRAL")),
-                score=float(entry.get("score", 0.0)),
+                score=float(entry.get("score", 0.0)),  # type: ignore[arg-type]
             )
         return SentimentResult(label="NEUTRAL", score=0.0)
 

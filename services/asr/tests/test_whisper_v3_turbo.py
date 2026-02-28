@@ -7,11 +7,11 @@ TranscriptToken output format for the faster-whisper backend.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from asr.engines.whisper_v3_turbo import WhisperV3TurboEngine, _BYTES_PER_SAMPLE, _SAMPLE_RATE
+from asr.engines.whisper_v3_turbo import WhisperV3TurboEngine, _BYTES_PER_SAMPLE
 
 from conftest import make_whisper_info, make_whisper_segment
 

@@ -41,7 +41,6 @@ async def health() -> JSONResponse:
     sentiment_ready = _sentiment_engine is not None and _sentiment_engine.is_ready
     pii_ready = _pii_redactor is not None and _pii_redactor.is_ready
 
-    all_ready = keyword_ready or True  # keywords may have 0 rules initially
     status_code = 200 if (sentiment_ready and pii_ready) else 503
 
     return JSONResponse(

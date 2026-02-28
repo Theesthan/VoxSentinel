@@ -8,4 +8,3 @@ event. Per-stream context (stream_id, session_id) is bound at processing time.
 
 from __future__ import annotations
 
-import structlog

@@ -6,7 +6,6 @@ Validates the /health route returns correct status and engine readiness.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from asr.health import get_engine_status, router, set_engine_status, _engine_status

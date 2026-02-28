@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-import pytest
 
 from tg_common.models import KeywordRule, MatchType, RuleMatchType, Severity
 

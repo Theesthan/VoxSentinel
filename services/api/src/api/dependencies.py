@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from fastapi import Depends, Request
+from fastapi import Request
 
 
 async def get_db_session(request: Request) -> AsyncIterator[Any]:

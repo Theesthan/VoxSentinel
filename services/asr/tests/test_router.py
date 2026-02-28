@@ -12,7 +12,6 @@ import base64
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from tg_common.models import TranscriptToken
 

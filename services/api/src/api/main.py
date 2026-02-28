@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from prometheus_client import Counter, Histogram, make_asgi_app
 
 from api.middleware.auth import AuthMiddleware
 from api.middleware.cors import add_cors
@@ -75,6 +76,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await r.close()
 
 
+# ── Prometheus metrics ──
+api_requests_total = Counter(
+    "api_requests_total",
+    "Total API requests received",
+    ["method", "endpoint", "status"],
+)
+api_request_duration_seconds = Histogram(
+    "api_request_duration_seconds",
+    "API request latency in seconds",
+    ["method", "endpoint"],
+)
+
+
 def create_app() -> FastAPI:
     """Build and return the fully-configured FastAPI application."""
     app = FastAPI(
@@ -98,6 +112,9 @@ def create_app() -> FastAPI:
     # Health + WS are mounted at root (no /api/v1 prefix).
     app.include_router(health.router)
     app.include_router(ws.router)
+
+    # Prometheus metrics endpoint
+    app.mount("/metrics", make_asgi_app())
 
     # ── Middleware (applied outermost-first) ──
     app.add_middleware(LoggingMiddleware)

@@ -17,7 +17,6 @@ from tg_common.models.alert import (
     Alert,
     AlertType,
     KeywordMatchEvent,
-    MatchType,
     SentimentEvent,
     Severity,
 )

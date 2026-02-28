@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -46,7 +46,7 @@ class TestStreamManagerLifecycle:
             # Make the pipeline end immediately — empty async gen.
             async def _empty_gen(*a, **kw):  # type: ignore[no-untyped-def]
                 return
-                yield  # noqa: unreachable — makes it an async gen  # type: ignore[misc]
+                yield  # noqa: F841,RUF027 — unreachable; makes it an async gen  # type: ignore[misc]
 
             mock_extract.return_value = _empty_gen()
 
