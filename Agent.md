@@ -124,50 +124,75 @@ Total elapsed time: ~250ms
 
 ### File Analyze Pipeline (Batch / Pre-Recorded)
 
-For uploaded audio files, VoxSentinel bypasses the streaming pipeline (VAD → ASR WebSocket → NLP)
+For uploaded audio/video files, VoxSentinel bypasses the streaming pipeline (VAD → ASR WebSocket → NLP)
 and instead uses **Deepgram's pre-recorded REST API** (`POST https://api.deepgram.com/v1/listen`):
 
 ```
-1. User uploads audio file via POST /api/v1/file-analyze (multipart form)
+1. User uploads audio/video file via POST /api/v1/file-analyze (multipart form)
+   - Video files (.mp4, .mkv, .avi, .mov, .webm, .flv) have audio extracted via FFmpeg
 2. API saves file to temp dir, creates Stream (source_type="file") + Session in DB
 3. Background task sends raw audio bytes to Deepgram pre-recorded API with:
    - model=nova-2, diarize=true, utterances=true, smart_format=true, punctuate=true
 4. Deepgram returns full JSON with utterances (speaker-labeled segments)
 5. API parses utterances → FileAnalyzeSegment objects (speaker_id, timestamps, confidence)
-6. Results stored in in-process job dict (job_id → transcript, alerts, summary)
-7. Dashboard polls GET /api/v1/file-analyze/{job_id} until status="completed"
+6. Keyword rule sets are loaded from DB and matched against each segment
+   - Supports exact (Aho-Corasick), fuzzy (RapidFuzz), and regex matching
+   - Generates alerts for each match with severity and rule metadata
+7. Results persisted:
+   - TranscriptSegmentORM rows → PostgreSQL (for transcript retrieval)
+   - AlertORM rows → PostgreSQL (for Alerts tab in dashboard)
+   - Transcript segments → Elasticsearch "transcripts" index (for full-text search)
+   - In-process job dict (job_id → transcript, alerts, summary) for polling
+8. Dashboard polls GET /api/v1/file-analyze/{job_id} until status="completed"
 ```
 
-This approach is significantly more reliable for batch files than the streaming pipeline,
-avoiding VAD chunk-size issues and WebSocket timeouts.
+#### YouTube Video Analysis
+
+YouTube URLs are also supported via `POST /api/v1/youtube/download-analyze`:
+```
+1. User submits YouTube URL, API resolves video title via yt-dlp
+2. Audio track downloaded as WAV via yt-dlp + FFmpeg
+3. Downloaded file enters the same file analyze pipeline (steps 3-8 above)
+```
 
 ### Native Local Development Setup
 
-VoxSentinel can run entirely natively on Windows without Docker:
+VoxSentinel runs entirely natively on Windows without Docker:
 
 | Component | Version | Location / Notes |
 |-----------|---------|------------------|
 | Python | 3.11.9 | venv at `.venv/` |
-| PostgreSQL | 18 | `localhost:5432`, user `voxsentinel`, db `voxsentinel`, pg_hba.conf set to `trust` |
+| PostgreSQL | 18 | `localhost:5432`, user `voxsentinel`, db `voxsentinel` |
 | Redis | 5.0.14.1 | tporadowski build at `redis5/`, port 6379 |
-| Elasticsearch | 9.3.1 | At `elasticsearch/`, single-node, security off, 512MB heap, port 9200 |
+| Elasticsearch | 9.3.1 | At `elasticsearch/`, single-node, security off, port 9200 |
 | Node.js | 20.x | Dashboard via Vite dev server |
+| FFmpeg | 7+ | Required for video file audio extraction and YouTube downloads |
+| yt-dlp | latest | In venv, for YouTube audio download |
 
 #### Service Ports (Native)
 
 | Service | Port | Notes |
 |---------|------|-------|
-| API Gateway | 8010 | Port 8000 may have ghost sockets from killed processes |
-| Storage | 8001 | |
-| VAD | 8002 | |
-| ASR | 8003 | |
-| NLP | 8004 | |
-| Alerts | 8006 | |
-| Ingestion | 8007 | |
+| API Gateway | 8010 | Main backend — handles REST, WebSocket, file analyze, YouTube |
 | Dashboard | 5173 | Vite dev server, proxies `/api` → `http://localhost:8010` |
-| PostgreSQL | 5432 | |
-| Redis | 6379 | |
-| Elasticsearch | 9200 | |
+| PostgreSQL | 5432 | Stores streams, sessions, transcripts, alerts, rules, channels |
+| Redis | 6379 | Caching and rate limiting |
+| Elasticsearch | 9200 | Full-text transcript search index |
+
+#### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `TG_API_KEY` | API authentication key (used in `Authorization: Bearer <key>` header) |
+| `TG_DEEPGRAM_API_KEY` | Deepgram API key for speech-to-text |
+| `TG_DB_URI` | PostgreSQL connection (default: `postgresql+asyncpg://voxsentinel:changeme@localhost:5432/voxsentinel`) |
+| `TG_REDIS_URL` | Redis URL (default: `redis://localhost:6379/0`) |
+| `TG_ES_URL` | Elasticsearch URL (default: `http://localhost:9200`) |
+
+#### Deployment
+
+For public access, use **Cloudflare Tunnel** (free) to expose the API gateway, and **Vercel** for the static frontend dashboard.
+The dashboard's `VITE_API_BASE_URL` env var points to the tunnel URL.
 
 ---
 

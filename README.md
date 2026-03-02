@@ -63,106 +63,123 @@ The file analyze pipeline bypasses VAD/ASR/NLP services entirely and calls Deepg
 
 ### Prerequisites
 
-- **Python** 3.11+
-- **Node.js** 20+
-- **PostgreSQL** 17+ (installed or standalone)
-- **Redis** 5.0+ ([tporadowski Windows build](https://github.com/tporadowski/redis/releases))
-- **Elasticsearch** 9.x (downloaded + extracted)
-- A **Deepgram API key** (set `TG_DEEPGRAM_API_KEY` in `.env`)
+| Software | Version | Notes |
+|----------|---------|-------|
+| **Python** | 3.11+ | [python.org](https://www.python.org/downloads/) |
+| **Node.js** | 20+ | [nodejs.org](https://nodejs.org/) |
+| **PostgreSQL** | 17+ | Running as a service or manually; create a database `voxsentinel` |
+| **Redis** | 5.0+ | [tporadowski Windows build](https://github.com/tporadowski/redis/releases) — extract to `redis5/` |
+| **Elasticsearch** | 9.x | [elastic.co](https://www.elastic.co/downloads/elasticsearch) — extract to `elasticsearch/` |
+| **FFmpeg** | 7+ | `winget install ffmpeg` (needed for video uploads) |
+| **Deepgram API key** | — | [console.deepgram.com](https://console.deepgram.com) — free tier works |
 
-### 1. Clone & configure
-
-```bash
-git clone <repo-url> && cd VoxSentinel
-cp .env.example .env
-# Edit .env — set TG_DEEPGRAM_API_KEY and database credentials
-```
-
-### 2. Start infrastructure
+### 1. Clone & set up Python venv
 
 ```powershell
-# Terminal 1: Elasticsearch
-cd elasticsearch && bin\elasticsearch.bat
-
-# Terminal 2: Redis
-cd redis5 && redis-server.exe
-
-# Terminal 3: PostgreSQL (if not running as a service)
-pg_ctl start -D "C:\Program Files\PostgreSQL\18\data"
-```
-
-### 3. Set up Python environment
-
-```powershell
+git clone <repo-url>
+cd VoxSentinel
 python -m venv .venv
 .venv\Scripts\activate
 
-# Install all service packages in editable mode
+# Install packages (editable mode)
 pip install -e packages/tg-common
-pip install -e services/ingestion
-pip install -e services/vad
-pip install -e services/asr
-pip install -e services/nlp
-pip install -e services/alerts
-pip install -e services/storage
 pip install -e services/api
+```
 
-# Create database tables
+### 2. Start infrastructure (3 terminals)
+
+```powershell
+# Terminal 1 — Elasticsearch
+cd elasticsearch
+bin\elasticsearch.bat
+# Wait until you see "started" in the output
+
+# Terminal 2 — Redis
+cd redis5
+redis-server.exe
+
+# Terminal 3 — PostgreSQL (skip if already running as a Windows service)
+pg_ctl start -D "C:\Program Files\PostgreSQL\18\data"
+```
+
+### 3. Create database & tables
+
+```powershell
+# Make sure PostgreSQL is running, then:
+psql -U postgres -c "CREATE DATABASE voxsentinel;"
+psql -U postgres -c "CREATE USER voxsentinel WITH PASSWORD 'changeme';"
+psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE voxsentinel TO voxsentinel;"
+
+# Create tables
+.venv\Scripts\activate
 python scripts/create_tables.py
 ```
 
-### 4. Start services
-
-```powershell
-# Each in its own terminal (activate venv first):
-uvicorn api.main:app --host 0.0.0.0 --port 8010
-uvicorn storage.main:app --host 0.0.0.0 --port 8001
-uvicorn vad.main:app --host 0.0.0.0 --port 8002
-uvicorn asr.main:app --host 0.0.0.0 --port 8003
-uvicorn nlp.main:app --host 0.0.0.0 --port 8004
-uvicorn alerts.main:app --host 0.0.0.0 --port 8006
-uvicorn ingestion.main:app --host 0.0.0.0 --port 8007
-```
-
-### 5. Start dashboard
-
-```powershell
-cd services/dashboard
-npm install
-npm run dev    # → http://localhost:5173
-```
-
-### 6. Seed legislative keyword rules (optional)
+### 4. Seed keyword rules (important for alert detection)
 
 ```powershell
 python scripts/seed_legislation_rules.py
 ```
 
-### 7. Verify
+### 5. Start the API gateway
 
-| Service | URL |
-|---------|-----|
-| API Gateway health | http://localhost:8010/health |
-| Storage health | http://localhost:8001/health |
-| VAD health | http://localhost:8002/health |
-| ASR health | http://localhost:8003/health |
-| NLP health | http://localhost:8004/health |
-| Alerts health | http://localhost:8006/health |
-| Ingestion health | http://localhost:8007/health |
-| Dashboard | http://localhost:5173 |
-| API Docs (Swagger) | http://localhost:8010/docs |
-| Elasticsearch | http://localhost:9200 |
+```powershell
+# Set environment variables and start (one command)
+set TG_API_KEY=<your-api-key>
+set TG_DEEPGRAM_API_KEY=<your-deepgram-key>
+.venv\Scripts\uvicorn.exe api.main:app --host 0.0.0.0 --port 8010 --app-dir services\api\src
+```
+
+The API key (`TG_API_KEY`) is used for authenticating dashboard requests.
+The Deepgram key (`TG_DEEPGRAM_API_KEY`) is used for speech-to-text transcription.
+
+### 6. Start the dashboard (separate terminal)
+
+```powershell
+cd services\dashboard
+npm install
+npm run dev
+```
+
+### 7. Verify everything works
+
+| Check | URL | Expected |
+|-------|-----|----------|
+| API Health | http://localhost:8010/health | `{"status":"healthy","services":{...}}` |
+| API Docs | http://localhost:8010/docs | Swagger UI |
+| Dashboard | http://localhost:5173 | VoxSentinel UI |
+| Elasticsearch | http://localhost:9200 | Cluster info JSON |
+
+### 8. Try it out
+
+1. Open **http://localhost:5173** in your browser
+2. Go to the **File Analyze** tab
+3. Upload an audio/video file (.mp3, .m4a, .mp4, .wav, etc.)
+4. Watch the progress bar — results appear when processing completes
+5. Check the **Alerts** tab for keyword match alerts
+6. Use the **Search** tab to search transcripts
+7. Paste a YouTube URL to analyze a video from the web
 
 ---
 
-## Quick Start (Docker Compose)
+## Deployment (Cloudflare Tunnel + Vercel)
 
-```bash
-cp .env.example .env
-docker compose up --build
+For public access without port forwarding:
+
+### Backend — Cloudflare Tunnel (free)
+
+```powershell
+# Download cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+cloudflared tunnel --url http://localhost:8010
+# Copy the generated public URL (e.g., https://xxxx.trycloudflare.com)
 ```
 
-Dashboard at `http://localhost:3000`, API docs at `http://localhost:8010/docs`.
+### Frontend — Vercel
+
+1. Push your repo to GitHub
+2. Import in [vercel.com](https://vercel.com) → set **Root Directory** to `services/dashboard`
+3. Add environment variable: `VITE_API_BASE_URL` = your Cloudflare tunnel URL + `/api/v1`
+4. Deploy
 
 ---
 

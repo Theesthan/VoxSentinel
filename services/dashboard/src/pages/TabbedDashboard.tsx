@@ -153,15 +153,17 @@ export default function TabbedDashboard() {
           <div className="flex items-center gap-2 px-2 py-1">
             <div
               className={`w-1.5 h-1.5 rounded-full ${
-                health === "ok"
+                health === "healthy"
                   ? "bg-emerald-400"
                   : health === "error"
                     ? "bg-red-400"
-                    : "bg-yellow-400 animate-pulse"
+                    : health === "degraded"
+                      ? "bg-yellow-400"
+                      : "bg-yellow-400 animate-pulse"
               }`}
             />
             <span className="text-[9px] font-mono tracking-[0.1em] text-white/20 uppercase">
-              {health === "ok" ? "API connected" : health === "error" ? "API offline" : "Checking…"}
+              {health === "healthy" ? "API connected" : health === "error" ? "API offline" : health === "degraded" ? "API degraded" : "Checking…"}
             </span>
           </div>
 
@@ -808,6 +810,7 @@ function FileAnalyzePanel() {
   const [ytUrl, setYtUrl] = useState("");
   const [ytProcessing, setYtProcessing] = useState(false);
   const [ytError, setYtError] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -820,6 +823,9 @@ function FileAnalyzePanel() {
 
   useEffect(() => {
     load();
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, [load]);
 
   const upload = async (file: File) => {
@@ -828,11 +834,13 @@ function FileAnalyzePanel() {
     try {
       const res = await api.submitFileForAnalysis(file);
       // Poll until done
+      if (pollRef.current) clearInterval(pollRef.current);
       const poll = setInterval(async () => {
         try {
           const s = await api.getFileAnalyzeJob(res.job_id);
           if (s.status === "completed" || s.status === "failed") {
             clearInterval(poll);
+            pollRef.current = null;
             load();
             setSelectedJob(s);
             setUploading(false);
@@ -842,10 +850,12 @@ function FileAnalyzePanel() {
           }
         } catch {
           clearInterval(poll);
+          pollRef.current = null;
           setUploading(false);
           setUploadError("Failed to check job status");
         }
       }, 2000);
+      pollRef.current = poll;
     } catch (err: unknown) {
       const msg = err instanceof api.ApiError ? err.body : "Upload failed";
       setUploadError(msg);
@@ -867,11 +877,13 @@ function FileAnalyzePanel() {
     try {
       const res = await api.youtubeDownloadAnalyze(ytUrl.trim());
       // Poll until done
+      if (pollRef.current) clearInterval(pollRef.current);
       const poll = setInterval(async () => {
         try {
           const s = await api.getFileAnalyzeJob(res.job_id);
           if (s.status === "completed" || s.status === "failed") {
             clearInterval(poll);
+            pollRef.current = null;
             load();
             setSelectedJob(s);
             setYtProcessing(false);
@@ -879,9 +891,11 @@ function FileAnalyzePanel() {
           }
         } catch {
           clearInterval(poll);
+          pollRef.current = null;
           setYtProcessing(false);
         }
       }, 3000);
+      pollRef.current = poll;
     } catch (err: unknown) {
       const msg = err instanceof api.ApiError ? err.body : "Failed to process YouTube URL";
       setYtError(msg);
@@ -1557,7 +1571,7 @@ function CreateChannelForm({ onCreated }: { onCreated: () => void }) {
     api
       .createAlertChannel({
         channel_type: channelType,
-        config: { webhook_url: webhookUrl },
+        config: channelType === "email" ? { email_address: webhookUrl } : { webhook_url: webhookUrl },
         min_severity: minSeverity,
         enabled: true,
       })
@@ -1581,7 +1595,7 @@ function CreateChannelForm({ onCreated }: { onCreated: () => void }) {
         </select>
         <input
           className="input-field"
-          placeholder="Webhook URL"
+          placeholder={channelType === "email" ? "Email address" : "Webhook URL"}
           value={webhookUrl}
           onChange={(e) => setWebhookUrl(e.target.value)}
         />

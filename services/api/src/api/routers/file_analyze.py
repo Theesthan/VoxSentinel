@@ -134,6 +134,7 @@ async def _run_pipeline(
     asr_backend: str,
     redis: Any,
     db_session_factory: Any = None,
+    es_client: Any = None,
 ) -> None:
     """Background task: send audio to Deepgram pre-recorded API and
     collect transcript with speaker diarization.
@@ -331,7 +332,7 @@ async def _run_pipeline(
                     alerts_out.append(
                         FileAnalyzeAlert(
                             alert_id=_uuid.uuid4(),
-                            alert_type="keyword_match",
+                            alert_type="keyword",
                             severity=rule["severity"],
                             matched_rule=rule["rule_id"],
                             match_type=rule["match_type"],
@@ -366,9 +367,103 @@ async def _run_pipeline(
             languages_detected=[detected_lang] if detected_lang else ["en"],
         )
 
+        # ── 6. Persist TranscriptSegmentORM + AlertORM to DB ──
+        if db_session_factory is not None:
+            try:
+                async with db_session_factory() as db_sess:
+                    base_time = _utc_now()
+                    for seg in transcript_out:
+                        seg_orm = TranscriptSegmentORM(
+                            segment_id=seg.segment_id,
+                            session_id=session_id,
+                            stream_id=stream_id,
+                            speaker_id=seg.speaker_id or "unknown",
+                            start_time=base_time,
+                            end_time=base_time,
+                            start_offset_ms=seg.start_offset_ms,
+                            end_offset_ms=seg.end_offset_ms,
+                            text_redacted=seg.text,
+                            text_original=seg.text,
+                            language=detected_lang or "en",
+                            asr_backend=asr_backend,
+                            asr_confidence=seg.confidence,
+                            sentiment_label=seg.sentiment_label,
+                            sentiment_score=seg.sentiment_score,
+                        )
+                        db_sess.add(seg_orm)
+
+                    for alert in alerts_out:
+                        # Map alert_type: pipeline uses "keyword_match" but DB enum expects "keyword"
+                        db_alert_type = "keyword"
+                        if alert.alert_type in ("keyword", "sentiment", "compliance", "intent"):
+                            db_alert_type = alert.alert_type
+
+                        # Map match_type: ensure it's a valid DB enum value
+                        db_match_type = alert.match_type or "exact"
+                        if db_match_type not in ("exact", "fuzzy", "regex", "sentiment_threshold", "intent"):
+                            db_match_type = "exact"
+
+                        # Map severity
+                        db_severity = (alert.severity or "medium").lower()
+                        if db_severity not in ("low", "medium", "high", "critical"):
+                            db_severity = "medium"
+
+                        alert_orm = AlertORM(
+                            alert_id=alert.alert_id,
+                            session_id=session_id,
+                            stream_id=stream_id,
+                            alert_type=db_alert_type,
+                            severity=db_severity,
+                            matched_rule=alert.matched_rule or "",
+                            match_type=db_match_type,
+                            matched_text=alert.matched_text or "",
+                            surrounding_context=alert.surrounding_context or "",
+                            speaker_id=alert.speaker_id,
+                            asr_backend_used=asr_backend,
+                        )
+                        db_sess.add(alert_orm)
+                    await db_sess.commit()
+                logger.info("file_analyze_db_persisted", job_id=job_id,
+                            segments=len(transcript_out), alerts=len(alerts_out))
+            except Exception:
+                logger.exception("file_analyze_db_persist_error", job_id=job_id)
+
+        # ── 7. Index transcript segments into Elasticsearch ──
+        if es_client is not None:
+            try:
+                stream_name = job.get("file_name", "")
+                for seg in transcript_out:
+                    doc = {
+                        "segment_id": str(seg.segment_id),
+                        "session_id": str(session_id),
+                        "stream_id": str(stream_id),
+                        "stream_name": stream_name,
+                        "speaker_id": seg.speaker_id or "unknown",
+                        "timestamp": _utc_now().isoformat(),
+                        "text": seg.text,
+                        "sentiment_label": seg.sentiment_label or "neutral",
+                        "start_offset_ms": seg.start_offset_ms,
+                        "end_offset_ms": seg.end_offset_ms,
+                        "confidence": seg.confidence,
+                    }
+                    await es_client.index(
+                        index="transcripts",
+                        id=str(seg.segment_id),
+                        document=doc,
+                    )
+                logger.info("file_analyze_es_indexed", job_id=job_id,
+                            segments=len(transcript_out))
+            except Exception:
+                logger.exception("file_analyze_es_index_error", job_id=job_id)
+
         job["status"] = "completed"
         job["progress_pct"] = 100
-        job["completed_at"] = _utc_now()
+        completed = _utc_now()
+        job["completed_at"] = completed
+        # Calculate duration
+        created = job.get("created_at")
+        if created and completed:
+            job["duration_seconds"] = (completed - created).total_seconds()
         job["transcript"] = transcript_out
         job["alerts"] = alerts_out
         job["summary"] = summary
@@ -477,10 +572,12 @@ async def submit_file(
 
     # Start background processing
     db_factory = getattr(request.app.state, "db_session_factory", None)
+    es = getattr(request.app.state, "es_client", None)
     asyncio.create_task(
         _run_pipeline(
             str(job_id), file_path, stream_id, session_id, asr_backend, redis,
             db_session_factory=db_factory,
+            es_client=es,
         ),
     )
 
@@ -508,6 +605,7 @@ async def get_job_status(job_id: _uuid.UUID) -> FileAnalyzeStatusResponse:
         file_name=job["file_name"],
         stream_id=job.get("stream_id"),
         session_id=job.get("session_id"),
+        duration_seconds=job.get("duration_seconds"),
         created_at=job["created_at"],
         completed_at=job.get("completed_at"),
         error_message=job.get("error_message"),
@@ -537,7 +635,7 @@ async def list_jobs(
             job_id=j["job_id"],
             status=j["status"],
             file_name=j["file_name"],
-            duration_seconds=None,
+            duration_seconds=j.get("duration_seconds"),
             total_alerts=len(j.get("alerts", [])),
             created_at=j["created_at"],
             completed_at=j.get("completed_at"),

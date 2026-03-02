@@ -336,19 +336,37 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 ---
 
 ### F13: File Analyze (Batch Transcription)
-**Description:** Upload audio files for asynchronous transcription and analysis using Deepgram's pre-recorded REST API, bypassing the streaming pipeline for reliability.
+**Description:** Upload audio/video files for asynchronous transcription and analysis using Deepgram's pre-recorded REST API, bypassing the streaming pipeline for reliability. Also supports YouTube video URLs.
 
-**User Story:** As an analyst, I want to upload recorded audio files and get a full transcript with speaker diarization and keyword highlighting so that I can review past recordings.
+**User Story:** As an analyst, I want to upload recorded audio/video files or paste a YouTube URL and get a full transcript with speaker diarization, keyword matching, and alerts so that I can review past recordings.
 
 **Priority:** P1
 
 **Acceptance Criteria:**
-- `POST /api/v1/file-analyze` accepts multipart audio file upload (WAV, MP3, M4A, MP4, OGG, FLAC, WebM, AAC).
+- `POST /api/v1/file-analyze` accepts multipart audio/video file upload (WAV, MP3, M4A, OGG, FLAC, AAC, WMA, MP4, MKV, AVI, MOV, WebM, FLV, WMV, TS, M4V).
+- Video files have their audio track extracted via FFmpeg before transcription.
 - Audio is sent directly to Deepgram pre-recorded API (`POST https://api.deepgram.com/v1/listen`) with nova-2 model, diarization, utterances, and smart formatting enabled.
 - Job status is trackable via `GET /api/v1/file-analyze/{job_id}` with polling.
-- Results include: transcript segments with speaker IDs, timestamps, confidence scores, and a summary (total segments, speakers detected, languages).
+- Results include: transcript segments with speaker IDs, timestamps, confidence scores, keyword matches, and a summary (total segments, speakers detected, languages, total alerts).
+- **Keyword detection** runs against all loaded rule sets (exact/fuzzy/regex) for each transcript segment.
+- **Alerts are persisted** to PostgreSQL (`AlertORM`) so they appear in the dashboard Alerts tab.
+- **Transcript segments are indexed** in Elasticsearch (`transcripts` index) for full-text search.
+- `duration_seconds` is calculated and returned in job responses.
 - File analyze streams have `source_type="file"` and are excluded from the Live Streams tab in the dashboard.
-- Dashboard File Analyze tab provides drag-and-drop upload, job list, and detail view with transcript/alerts/summary sub-tabs.
+- Dashboard File Analyze tab provides drag-and-drop upload, YouTube URL input, job list, and detail view with transcript/alerts/summary sub-tabs.
+
+### F13b: YouTube Video Analysis
+**Description:** Submit YouTube URLs for automatic audio download and analysis via the file analyze pipeline.
+
+**User Story:** As a legislative monitor, I want to paste a YouTube URL of a government hearing and get a complete transcript with keyword alerts.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- `POST /api/v1/youtube/resolve` resolves a YouTube URL to title, duration, and thumbnail via yt-dlp.
+- `POST /api/v1/youtube/download-analyze` downloads audio via yt-dlp + FFmpeg, then enters the file analyze pipeline.
+- Both live streams and VOD (video-on-demand) YouTube URLs are supported.
+- Results follow the same format as file analyze (transcript, alerts, summary, persisted to DB and ES).
 
 ---
 
