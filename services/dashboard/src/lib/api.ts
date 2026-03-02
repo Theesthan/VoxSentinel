@@ -1,11 +1,14 @@
 /**
  * VoxSentinel API client.
  *
- * All requests are proxied through nginx at /api/v1/*.
- * Authentication is via Bearer token stored in localStorage.
+ * In dev, requests are proxied through Vite at /api/v1/*.
+ * In production, set VITE_API_BASE_URL to the backend URL
+ * (e.g. https://your-tunnel.trycloudflare.com)
  */
 
-const BASE = "/api/v1";
+const BASE = import.meta.env.VITE_API_BASE_URL
+  ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
+  : "/api/v1";
 
 // ── Auth helpers ──
 

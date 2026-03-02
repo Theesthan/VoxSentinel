@@ -21,7 +21,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/ws": {
-        target: "ws://localhost:8010",
+        target: `ws://${process.env.VITE_API_HOST ?? "localhost:8010"}`,
         ws: true,
       },
     },
