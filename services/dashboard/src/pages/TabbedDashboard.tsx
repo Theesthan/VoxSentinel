@@ -4,7 +4,6 @@ import {
   Radio,
   FileAudio,
   AlertTriangle,
-  Search,
   Settings,
   Mic,
   Plus,
@@ -25,7 +24,6 @@ import type {
   Rule,
   Alert,
   AlertChannel,
-  SearchHit,
   FileAnalyzeStatusResponse,
   FileAnalyzeJobSummary,
   TranscriptSegment,
@@ -35,13 +33,12 @@ import type {
    Constants & helpers
    ═══════════════════════════════════════════════ */
 
-type Tab = "live" | "file" | "alerts" | "search" | "settings";
+type Tab = "live" | "file" | "alerts" | "settings";
 
 const NAV_ITEMS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "live", label: "Live Streams", icon: <Radio className="w-4 h-4" /> },
   { id: "file", label: "File Analyze", icon: <FileAudio className="w-4 h-4" /> },
   { id: "alerts", label: "Alerts", icon: <AlertTriangle className="w-4 h-4" /> },
-  { id: "search", label: "Search", icon: <Search className="w-4 h-4" /> },
   { id: "settings", label: "Settings", icon: <Settings className="w-4 h-4" /> },
 ];
 
@@ -210,11 +207,6 @@ export default function TabbedDashboard() {
                 <AlertsPanel />
               </motion.div>
             )}
-            {tab === "search" && (
-              <motion.div key="search" {...PAGE_TRANSITION}>
-                <SearchPanel />
-              </motion.div>
-            )}
             {tab === "settings" && (
               <motion.div key="settings" {...PAGE_TRANSITION}>
                 <SettingsPanel />
@@ -237,6 +229,8 @@ function LiveStreamsPanel() {
   const [showCreate, setShowCreate] = useState(false);
   const [selected, setSelected] = useState<Stream | null>(null);
   const [micActive, setMicActive] = useState(false);
+  const [micTranscript, setMicTranscript] = useState<{ text: string; isAlert?: boolean; severity?: string }[]>([]);
+  const [micAlerts, setMicAlerts] = useState<{ keyword: string; severity: string; text: string }[]>([]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -264,7 +258,15 @@ function LiveStreamsPanel() {
           <Plus className="w-3 h-3" /> New Stream
         </button>
         <button
-          onClick={() => setMicActive((v) => !v)}
+          onClick={() => {
+            if (micActive) {
+              setMicActive(false);
+            } else {
+              setMicTranscript([]);
+              setMicAlerts([]);
+              setMicActive(true);
+            }
+          }}
           className={`inline-flex items-center gap-2 px-4 py-2 border text-[10px] font-mono tracking-[0.15em] uppercase transition-colors ${
             micActive
               ? "border-red-400/40 text-red-400 bg-red-400/5"
@@ -309,10 +311,61 @@ function LiveStreamsPanel() {
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
-            <MicPanel onStop={() => setMicActive(false)} />
+            <MicPanel
+              onStop={() => setMicActive(false)}
+              onTranscript={(t) => setMicTranscript((prev) => [...prev.slice(-200), { text: t }])}
+              onAlert={(a) => {
+                setMicAlerts((prev) => [...prev, a]);
+                setMicTranscript((prev) => [
+                  ...prev,
+                  { text: `⚠ Keyword: "${a.keyword}" (${a.severity})`, isAlert: true, severity: a.severity },
+                ]);
+              }}
+            />
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Mic transcript (shown after stop) */}
+      {!micActive && micTranscript.length > 0 && (
+        <div className="p-6 border border-white/[0.06] bg-white/[0.01]">
+          <div className="flex items-center justify-between mb-4">
+            <SectionLabel>Microphone recording transcript</SectionLabel>
+            <div className="flex items-center gap-2">
+              {micAlerts.length > 0 && (
+                <span className="text-[10px] font-mono text-red-400">
+                  {micAlerts.length} alert{micAlerts.length !== 1 ? "s" : ""}
+                </span>
+              )}
+              <button
+                onClick={() => { setMicTranscript([]); setMicAlerts([]); }}
+                className="p-1.5 text-white/20 hover:text-red-400 transition-colors"
+                title="Clear"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          <div className="max-h-64 overflow-y-auto space-y-1 pr-2">
+            {micTranscript.map((t, i) => (
+              <p
+                key={i}
+                className={`text-[12px] leading-relaxed ${
+                  t.isAlert
+                    ? t.severity === "critical"
+                      ? "text-red-400 font-semibold"
+                      : t.severity === "high"
+                        ? "text-orange-400"
+                        : "text-yellow-400"
+                    : "text-white/50"
+                }`}
+              >
+                {t.text}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stream grid */}
       <SectionLabel>Active streams</SectionLabel>
@@ -373,6 +426,30 @@ function StreamCard({
   onToggle: () => void;
 }) {
   const isActive = stream.status === "active";
+  // YouTube live streams are stored as source_type="hls" with metadata.stream_type="youtube_live"
+  const isYtLive =
+    stream.source_type === "youtube_live" ||
+    (stream.metadata as Record<string, unknown> | null)?.stream_type === "youtube_live";
+
+  // For youtube_live streams, check actual liveness on mount
+  const [liveChecked, setLiveChecked] = useState(false);
+  const [isActuallyLive, setIsActuallyLive] = useState(isActive);
+
+  useEffect(() => {
+    if (isYtLive && isActive) {
+      api.getYouTubeLiveStatus(stream.stream_id)
+        .then((r) => { setIsActuallyLive(r.is_running); setLiveChecked(true); })
+        .catch(() => { setIsActuallyLive(false); setLiveChecked(true); });
+    } else {
+      setIsActuallyLive(isActive);
+      setLiveChecked(true);
+    }
+  }, [stream.stream_id, stream.status, isYtLive, isActive]);
+
+  const showGreen = liveChecked ? isActuallyLive : isActive;
+  const statusLabel = isYtLive
+    ? (showGreen ? "live" : "offline")
+    : stream.status;
 
   return (
     <div
@@ -385,11 +462,11 @@ function StreamCard({
       <div className="flex items-center gap-2 mb-3">
         <div
           className={`w-1.5 h-1.5 rounded-full ${
-            isActive ? "bg-emerald-400 animate-pulse" : "bg-white/15"
+            showGreen ? "bg-emerald-400 animate-pulse" : "bg-red-400/60"
           }`}
         />
         <span className="text-[10px] font-mono tracking-[0.15em] text-white/30 uppercase">
-          {stream.status}
+          {statusLabel}
         </span>
       </div>
 
@@ -398,7 +475,7 @@ function StreamCard({
 
       {/* Meta */}
       <div className="flex items-center gap-2 flex-wrap mt-2">
-        <Pill>{stream.source_type}</Pill>
+        <Pill>{isYtLive ? "youtube live" : stream.source_type}</Pill>
         <Pill>{stream.asr_backend}</Pill>
       </div>
 
@@ -433,81 +510,69 @@ function StreamCard({
 
 function CreateStreamForm({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = useState("");
-  const [sourceType, setSourceType] = useState("rtsp");
   const [sourceUrl, setSourceUrl] = useState("");
-  const [asrBackend, setAsrBackend] = useState("deepgram_nova2");
-  const [asrFallback, setAsrFallback] = useState("");
-  const [languageOverride, setLanguageOverride] = useState("");
-  const [vadThreshold, setVadThreshold] = useState("0.5");
-  const [chunkSizeMs, setChunkSizeMs] = useState("280");
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [ytResolving, setYtResolving] = useState(false);
-  const [ytMessage, setYtMessage] = useState("");
+  const [statusMsg, setStatusMsg] = useState<{ type: "ok" | "err" | "info"; text: string } | null>(null);
 
   const isYouTubeUrl = (url: string) =>
     /youtube\.com|youtu\.be/i.test(url);
 
-  // Dynamic placeholder based on source type
-  const urlPlaceholder: Record<string, string> = {
-    rtsp: "rtsp://camera-ip:554/stream",
-    hls: "https://example.com/stream.m3u8 or YouTube URL",
-    dash: "https://example.com/stream.mpd",
-    webrtc: "wss://example.com/webrtc",
-    sip: "sip:user@domain.com",
-    meeting_relay: "https://meeting-relay-url",
-  };
-
-  const handleUrlChange = (url: string) => {
-    setSourceUrl(url);
-    setYtMessage("");
-    // Auto-detect YouTube URLs and switch to HLS
-    if (isYouTubeUrl(url) && sourceType !== "hls") {
-      setSourceType("hls");
-    }
-  };
-
-  const resolveYouTube = async () => {
-    if (!sourceUrl) return;
-    setYtResolving(true);
-    setYtMessage("");
-    try {
-      const result = await api.resolveYouTubeUrl(sourceUrl);
-      if (result.is_live && result.hls_url) {
-        setSourceUrl(result.hls_url);
-        setSourceType("hls");
-        if (!name) setName(result.title);
-        setYtMessage(`✓ Live stream detected: ${result.title}`);
-      } else {
-        setYtMessage(`ℹ This is a VOD. Use File Analyze tab → YouTube to transcribe it.`);
-      }
-    } catch {
-      setYtMessage("✗ Could not resolve YouTube URL");
-    } finally {
-      setYtResolving(false);
-    }
-  };
-
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name || !sourceUrl) return;
+    if (!sourceUrl) return;
     setSubmitting(true);
-    const body: api.StreamCreateRequest = {
-      name,
-      source_type: sourceType,
-      source_url: sourceUrl,
-      asr_backend: asrBackend,
-    };
-    if (asrFallback) body.asr_fallback_backend = asrFallback;
-    if (languageOverride) body.language_override = languageOverride;
-    if (vadThreshold) body.vad_threshold = parseFloat(vadThreshold);
-    if (chunkSizeMs) body.chunk_size_ms = parseInt(chunkSizeMs, 10);
+    setStatusMsg(null);
 
-    api
-      .createStream(body)
-      .then(onCreated)
-      .catch(() => {})
-      .finally(() => setSubmitting(false));
+    try {
+      if (isYouTubeUrl(sourceUrl)) {
+        // YouTube flow: resolve → check liveness → start live transcription
+        setStatusMsg({ type: "info", text: "Checking YouTube stream status…" });
+        const resolved = await api.resolveYouTubeUrl(sourceUrl);
+
+        if (!resolved.is_live) {
+          setStatusMsg({ type: "info", text: "This is a recorded video. Redirecting to File Analyze tab is recommended — or use Download & Analyze there." });
+          setSubmitting(false);
+          return;
+        }
+
+        // It's live — start live transcription directly
+        setStatusMsg({ type: "ok", text: `✓ Live stream detected: ${resolved.title}. Starting transcription…` });
+        await api.startYouTubeLive(sourceUrl, name || resolved.title);
+        setStatusMsg(null);
+        setName("");
+        setSourceUrl("");
+        onCreated();
+      } else {
+        // Non-YouTube: create a regular stream (HLS/RTSP/etc)
+        if (!name) {
+          setStatusMsg({ type: "err", text: "Stream name is required for non-YouTube sources" });
+          setSubmitting(false);
+          return;
+        }
+
+        // Auto-detect source type from URL
+        let sourceType = "hls";
+        if (sourceUrl.startsWith("rtsp://")) sourceType = "rtsp";
+        else if (sourceUrl.includes(".mpd")) sourceType = "dash";
+        else if (sourceUrl.startsWith("wss://") || sourceUrl.startsWith("ws://")) sourceType = "webrtc";
+        else if (sourceUrl.startsWith("sip:")) sourceType = "sip";
+
+        await api.createStream({
+          name,
+          source_type: sourceType,
+          source_url: sourceUrl,
+          asr_backend: "deepgram_nova2",
+        });
+        setName("");
+        setSourceUrl("");
+        onCreated();
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof api.ApiError ? err.body : "Failed to create stream";
+      setStatusMsg({ type: "err", text: msg });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -516,122 +581,39 @@ function CreateStreamForm({ onCreated }: { onCreated: () => void }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <input
           className="input-field"
-          placeholder="Stream name"
+          placeholder="Stream name (auto-filled for YouTube)"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <div className="flex gap-2">
-          <input
-            className="input-field flex-1"
-            placeholder={urlPlaceholder[sourceType] ?? "Source URL"}
-            value={sourceUrl}
-            onChange={(e) => handleUrlChange(e.target.value)}
-          />
-          {isYouTubeUrl(sourceUrl) && (
-            <button
-              type="button"
-              onClick={resolveYouTube}
-              disabled={ytResolving}
-              className="px-3 py-1 border border-red-400/30 text-[9px] font-mono tracking-wider text-red-400/70 hover:bg-red-400/5 disabled:opacity-30 transition-colors whitespace-nowrap"
-            >
-              {ytResolving ? "Resolving…" : "▶ Resolve YT"}
-            </button>
-          )}
-        </div>
-        <select
+        <input
           className="input-field"
-          value={sourceType}
-          onChange={(e) => setSourceType(e.target.value)}
-        >
-          <option value="rtsp">RTSP</option>
-          <option value="hls">HLS</option>
-          <option value="dash">DASH</option>
-          <option value="webrtc">WebRTC</option>
-          <option value="sip">SIP</option>
-          <option value="meeting_relay">Meeting Relay</option>
-        </select>
-        <select
-          className="input-field"
-          value={asrBackend}
-          onChange={(e) => setAsrBackend(e.target.value)}
-        >
-          <option value="deepgram_nova2">Deepgram Nova-2</option>
-          <option value="whisper">Whisper v3 Turbo</option>
-        </select>
+          placeholder="YouTube live URL, HLS/RTSP/DASH URL"
+          value={sourceUrl}
+          onChange={(e) => { setSourceUrl(e.target.value); setStatusMsg(null); }}
+        />
       </div>
 
-      {/* YouTube resolution message */}
-      {ytMessage && (
-        <p className={`text-[10px] font-mono tracking-wider ${
-          ytMessage.startsWith("✓") ? "text-emerald-400/60" :
-          ytMessage.startsWith("✗") ? "text-red-400/60" : "text-yellow-400/60"
-        }`}>
-          {ytMessage}
+      {isYouTubeUrl(sourceUrl) && (
+        <p className="text-[10px] font-mono tracking-wider text-red-400/50">
+          YouTube URL detected — will check liveness and start live transcription automatically
         </p>
       )}
 
-      {/* Advanced settings toggle */}
-      <button
-        type="button"
-        onClick={() => setShowAdvanced((v) => !v)}
-        className="text-[10px] font-mono tracking-[0.1em] text-white/25 hover:text-white/50 uppercase transition-colors"
-      >
-        {showAdvanced ? "▾ Hide advanced" : "▸ Advanced settings"}
-      </button>
-
-      <AnimatePresence>
-        {showAdvanced && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden"
-          >
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-              <select
-                className="input-field"
-                value={asrFallback}
-                onChange={(e) => setAsrFallback(e.target.value)}
-              >
-                <option value="">No fallback ASR</option>
-                <option value="deepgram_nova2">Deepgram Nova-2</option>
-                <option value="whisper">Whisper v3 Turbo</option>
-              </select>
-              <input
-                className="input-field"
-                placeholder="Language override (e.g. en, hi, es)"
-                value={languageOverride}
-                onChange={(e) => setLanguageOverride(e.target.value)}
-              />
-              <input
-                className="input-field"
-                placeholder="VAD threshold (0.0–1.0)"
-                type="number"
-                step="0.05"
-                min="0"
-                max="1"
-                value={vadThreshold}
-                onChange={(e) => setVadThreshold(e.target.value)}
-              />
-              <input
-                className="input-field"
-                placeholder="Chunk size (ms)"
-                type="number"
-                min="20"
-                value={chunkSizeMs}
-                onChange={(e) => setChunkSizeMs(e.target.value)}
-              />
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {statusMsg && (
+        <p className={`text-[10px] font-mono tracking-wider ${
+          statusMsg.type === "ok" ? "text-emerald-400/60" :
+          statusMsg.type === "err" ? "text-red-400/60" : "text-yellow-400/60"
+        }`}>
+          {statusMsg.text}
+        </p>
+      )}
 
       <button
         type="submit"
-        disabled={submitting}
+        disabled={submitting || !sourceUrl}
         className="px-6 py-2 border border-white/15 text-[10px] font-mono tracking-[0.15em] uppercase hover:bg-white/[0.04] disabled:opacity-30 transition-colors"
       >
-        {submitting ? "Creating…" : "Create Stream"}
+        {submitting ? "Starting…" : isYouTubeUrl(sourceUrl) ? "Start Live Transcription" : "Create Stream"}
       </button>
     </form>
   );
@@ -714,8 +696,17 @@ function TranscriptViewer({ stream }: { stream: Stream }) {
 
 /* ── Microphone panel ── */
 
-function MicPanel({ onStop }: { onStop: () => void }) {
+function MicPanel({
+  onStop,
+  onTranscript,
+  onAlert,
+}: {
+  onStop: () => void;
+  onTranscript: (text: string) => void;
+  onAlert: (alert: { keyword: string; severity: string; text: string }) => void;
+}) {
   const [transcript, setTranscript] = useState<string[]>([]);
+  const [alerts, setAlerts] = useState<{ keyword: string; severity: string }[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -728,8 +719,15 @@ function MicPanel({ onStop }: { onStop: () => void }) {
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data.text) {
+        if (data.type === "keyword_match") {
+          // Keyword alert from server
+          setAlerts((prev) => [...prev, { keyword: data.keyword, severity: data.severity }]);
+          onAlert({ keyword: data.keyword, severity: data.severity, text: data.text });
+        } else if (data.text) {
           setTranscript((prev) => [...prev.slice(-100), data.text]);
+          if (data.is_final) {
+            onTranscript(data.text);
+          }
         }
       } catch {}
     };
@@ -766,7 +764,7 @@ function MicPanel({ onStop }: { onStop: () => void }) {
       ws.close();
       mediaRef.current?.getTracks().forEach((t) => t.stop());
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="p-6 border border-red-400/10 bg-red-400/[0.02]">
@@ -774,6 +772,11 @@ function MicPanel({ onStop }: { onStop: () => void }) {
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
           <SectionLabel>Microphone active</SectionLabel>
+          {alerts.length > 0 && (
+            <span className="text-[10px] font-mono text-red-400 ml-2">
+              {alerts.length} alert{alerts.length !== 1 ? "s" : ""}
+            </span>
+          )}
         </div>
         <button
           onClick={onStop}
@@ -792,6 +795,17 @@ function MicPanel({ onStop }: { onStop: () => void }) {
           </p>
         ))}
       </div>
+      {alerts.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-red-400/10 space-y-1">
+          <span className="text-[10px] font-mono text-red-400/60 uppercase tracking-wider">Keyword alerts</span>
+          {alerts.map((a, i) => (
+            <p key={i} className="text-[11px] text-red-400/80">
+              ◆ <span className="font-medium">{a.keyword}</span>{" "}
+              <span className="text-white/30">({a.severity})</span>
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -833,7 +847,21 @@ function FileAnalyzePanel() {
     setUploadError("");
     try {
       const res = await api.submitFileForAnalysis(file);
-      // Poll until done
+
+      // Immediately add a "processing" entry to the jobs list and reset upload area
+      const newJob: FileAnalyzeJobSummary = {
+        job_id: res.job_id,
+        status: "processing",
+        file_name: res.file_name,
+        duration_seconds: null,
+        total_alerts: 0,
+        created_at: res.created_at,
+        completed_at: null,
+      };
+      setJobs((prev) => [newJob, ...prev]);
+      setUploading(false);
+
+      // Poll until done in background
       if (pollRef.current) clearInterval(pollRef.current);
       const poll = setInterval(async () => {
         try {
@@ -841,18 +869,20 @@ function FileAnalyzePanel() {
           if (s.status === "completed" || s.status === "failed") {
             clearInterval(poll);
             pollRef.current = null;
-            load();
+            load(); // refresh full list
             setSelectedJob(s);
-            setUploading(false);
             if (s.status === "failed" && s.error_message) {
               setUploadError(s.error_message);
             }
+          } else {
+            // Update status in local jobs list while processing
+            setJobs((prev) => prev.map((j) =>
+              j.job_id === res.job_id ? { ...j, status: s.status } : j
+            ));
           }
         } catch {
           clearInterval(poll);
           pollRef.current = null;
-          setUploading(false);
-          setUploadError("Failed to check job status");
         }
       }, 2000);
       pollRef.current = poll;
@@ -931,7 +961,7 @@ function FileAnalyzePanel() {
         />
         <Upload className="w-5 h-5 text-white/15 mb-3" />
         <span className="text-[11px] font-mono tracking-[0.1em] text-white/25 uppercase">
-          {uploading ? "Processing…" : "Drop audio or video file to upload"}
+          {uploading ? "Uploading…" : "Drop audio or video file to upload"}
         </span>
       </div>
       {uploadError && (
@@ -1215,78 +1245,6 @@ function AlertsPanel() {
 /* ═══════════════════════════════════════════════
    4. SEARCH
    ═══════════════════════════════════════════════ */
-
-function SearchPanel() {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchHit[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [searched, setSearched] = useState(false);
-
-  const doSearch = (e: FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-    setLoading(true);
-    setSearched(true);
-    api
-      .searchTranscripts({ query: query.trim(), limit: 50 })
-      .then((r) => {
-        setResults(r.results);
-        setTotal(r.total);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  };
-
-  return (
-    <div className="space-y-6">
-      <form onSubmit={doSearch} className="flex gap-3">
-        <input
-          className="input-field flex-1"
-          placeholder="Search transcripts…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <button
-          type="submit"
-          disabled={loading}
-          className="px-6 py-2 border border-white/10 text-[10px] font-mono tracking-[0.15em] uppercase hover:bg-white/[0.04] disabled:opacity-30 transition-colors"
-        >
-          {loading ? "Searching…" : "Search"}
-        </button>
-      </form>
-
-      {searched && (
-        <span className="text-[10px] font-mono text-white/20 tracking-wider">
-          {total} result{total !== 1 ? "s" : ""}
-        </span>
-      )}
-
-      {results.length > 0 && (
-        <div className="space-y-2">
-          {results.map((hit) => (
-            <div
-              key={hit.segment_id}
-              className="p-4 border border-white/[0.06] hover:border-white/10 transition-colors"
-            >
-              <div className="flex items-center gap-2 mb-2">
-                {hit.stream_name && <Pill>{hit.stream_name}</Pill>}
-                {hit.speaker_id && <Pill>{hit.speaker_id}</Pill>}
-                {hit.sentiment_label && <Pill>{hit.sentiment_label}</Pill>}
-              </div>
-              <p className="text-[13px] text-white/50 leading-relaxed">{hit.text}</p>
-              <span className="text-[9px] font-mono text-white/10 mt-2 block">
-                {new Date(hit.timestamp).toLocaleString()}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {searched && results.length === 0 && !loading && <EmptyState text="No results found" />}
-    </div>
-  );
-}
 
 /* ═══════════════════════════════════════════════
    5. SETTINGS (Rules + Channels)

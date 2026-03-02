@@ -9,7 +9,28 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
+
+# Load .env file from project root (VoxSentinel/) if dotenv is available
+try:
+    from dotenv import load_dotenv
+    # Walk up from src/api/main.py to find the .env file
+    _env_candidates = [
+        Path(__file__).resolve().parents[3] / ".env",  # services/api/src -> services -> .env? no
+        Path(__file__).resolve().parents[4] / ".env",  # -> VoxSentinel/.env
+        Path(__file__).resolve().parents[5] / ".env",
+        Path.cwd() / ".env",
+        Path.cwd().parent / ".env",
+        Path.cwd().parent.parent / ".env",
+        Path.cwd().parent.parent.parent / ".env",
+    ]
+    for _env_path in _env_candidates:
+        if _env_path.exists():
+            load_dotenv(_env_path, override=False)
+            break
+except ImportError:
+    pass
 
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram, make_asgi_app
@@ -25,7 +46,6 @@ from api.routers import (
     file_analyze,
     health,
     rules,
-    search,
     streams,
     transcripts,
     ws,
@@ -107,7 +127,6 @@ def create_app() -> FastAPI:
     app.include_router(rules.router, prefix=api_prefix)
     app.include_router(alerts.router, prefix=api_prefix)
     app.include_router(alert_channels.router, prefix=api_prefix)
-    app.include_router(search.router, prefix=api_prefix)
     app.include_router(transcripts.router, prefix=api_prefix)
     app.include_router(audit.router, prefix=api_prefix)
     app.include_router(file_analyze.router, prefix=api_prefix)

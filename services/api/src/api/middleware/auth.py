@@ -29,8 +29,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path in _PUBLIC_PATHS or path.startswith("/ws/"):
             return await call_next(request)
 
-        api_key = os.environ.get("TG_API_KEY", "")
-        auth_header = request.headers.get("Authorization", "")
+        api_key = os.environ.get("TG_API_KEY", "").strip()
+        auth_header = request.headers.get("Authorization", "").strip()
 
         if not auth_header.startswith("Bearer "):
             return JSONResponse(

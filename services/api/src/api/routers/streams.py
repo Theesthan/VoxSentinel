@@ -180,7 +180,7 @@ async def update_stream(
     return await get_stream(stream_id, db)
 
 
-@router.delete("/{stream_id}", status_code=204)
+@router.delete("/{stream_id}", status_code=204, response_model=None)
 async def delete_stream(
     stream_id: _uuid.UUID,
     db: Any = Depends(get_db_session),

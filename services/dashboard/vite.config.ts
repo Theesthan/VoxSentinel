@@ -13,15 +13,15 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:8010",
+        target: "http://localhost:8011",
         changeOrigin: true,
       },
       "/health": {
-        target: "http://localhost:8010",
+        target: "http://localhost:8011",
         changeOrigin: true,
       },
       "/ws": {
-        target: `ws://${process.env.VITE_API_HOST ?? "localhost:8010"}`,
+        target: `ws://${process.env.VITE_API_HOST ?? "localhost:8011"}`,
         ws: true,
       },
     },

@@ -2,20 +2,24 @@
 YouTube URL resolution router for VoxSentinel.
 
 Resolves YouTube URLs (live or VOD) so the frontend can either:
-- Create an HLS stream (for live broadcasts)
+- Start live transcription (for live broadcasts)
 - Submit audio for file-analyze (for VODs)
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import shutil
+import subprocess
 import tempfile
 import uuid as _uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -28,6 +32,14 @@ router = APIRouter(prefix="/youtube", tags=["youtube"])
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "voxsentinel_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Ensure Deno is in PATH for yt-dlp JS challenge solving
+_deno_bin = Path.home() / ".deno" / "bin"
+if _deno_bin.is_dir() and str(_deno_bin) not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = str(_deno_bin) + os.pathsep + os.environ.get("PATH", "")
+
+# Track active live transcription tasks so they can be stopped
+_live_tasks: dict[str, asyncio.Task] = {}
 
 
 class YouTubeResolveRequest(BaseModel):
@@ -53,66 +65,142 @@ async def _resolve_youtube(url: str) -> dict:
     """Use yt-dlp to extract info about a YouTube URL.
 
     Returns a dict with keys: is_live, title, hls_url (if live).
+    Falls back to HTTP scraping if yt-dlp fails (e.g. bot detection).
     """
-    import yt_dlp
+    import re as _re
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "format": "bestaudio/best",
-    }
+    import httpx
 
-    def _extract():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)
+    # --- Try yt-dlp first (multiple strategies) ---
+    info = None
+    for strategy in _yt_dlp_strategies():
+        try:
+            info = await asyncio.to_thread(_yt_dlp_extract, url, strategy)
+            break
+        except Exception:
+            continue
 
-    info = await asyncio.to_thread(_extract)
+    if info is not None:
+        is_live = info.get("is_live", False) or info.get("live_status") == "is_live"
+        title = info.get("title", "Unknown")
 
-    is_live = info.get("is_live", False) or info.get("live_status") == "is_live"
-    title = info.get("title", "Unknown")
+        hls_url = None
+        if is_live:
+            hls_url = info.get("manifest_url") or info.get("url")
+            if not hls_url:
+                for fmt in info.get("formats", []):
+                    if fmt.get("protocol") in ("m3u8", "m3u8_native") or "m3u8" in (fmt.get("url", "")):
+                        hls_url = fmt["url"]
+                        break
+            if not hls_url:
+                for fmt in reversed(info.get("formats", [])):
+                    if fmt.get("acodec") != "none":
+                        hls_url = fmt["url"]
+                        break
 
-    hls_url = None
-    if is_live:
-        # Try to get the HLS manifest URL
-        hls_url = info.get("manifest_url") or info.get("url")
-        if not hls_url:
-            # Fall back to formats with m3u8
-            for fmt in info.get("formats", []):
-                if fmt.get("protocol") == "m3u8" or "m3u8" in (fmt.get("url", "")):
-                    hls_url = fmt["url"]
-                    break
-                if fmt.get("protocol") == "m3u8_native":
-                    hls_url = fmt["url"]
-                    break
-        if not hls_url:
-            # Last resort: get any format URL
-            for fmt in reversed(info.get("formats", [])):
-                if fmt.get("acodec") != "none":
-                    hls_url = fmt["url"]
-                    break
+        return {
+            "is_live": is_live,
+            "title": title,
+            "hls_url": hls_url,
+            "formats": info.get("formats", []),
+            "info": info,
+        }
+
+    # --- Fallback: HTTP scrape for liveness ---
+    logger.warning("yt_dlp_failed_all_strategies", url=url)
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url, follow_redirects=True, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        })
+        html = resp.text
+
+    # Check for live indicators in page source
+    is_live = bool(
+        _re.search(r'"isLive"\s*:\s*true', html)
+        or _re.search(r'"isLiveNow"\s*:\s*true', html)
+        or _re.search(r'"liveBroadcastDetails"', html)
+        or _re.search(r'"style"\s*:\s*"LIVE"', html)
+    )
+
+    # Extract title
+    title_match = _re.search(r'"title"\s*:\s*"([^"]+)"', html)
+    title = title_match.group(1) if title_match else "Unknown"
 
     return {
         "is_live": is_live,
         "title": title,
-        "hls_url": hls_url,
-        "formats": info.get("formats", []),
-        "info": info,
+        "hls_url": None,  # Can't get HLS without yt-dlp
+        "formats": [],
+        "info": {},
     }
+
+
+# Path to Netscape cookies.txt for YouTube authentication.
+# Priority: TG_COOKIES_FILE env var → cookies/vidcookie.txt → cookies/cookies.txt
+def _find_cookies_file() -> Path:
+    env_path = os.getenv("TG_COOKIES_FILE")
+    if env_path:
+        return Path(env_path)
+    # VoxSentinel root = 5 levels up from this file
+    # (routers → api → src → api → services → VoxSentinel)
+    root = Path(__file__).resolve().parents[5]
+    preferred = root / "cookies" / "vidcookie.txt"
+    if preferred.exists():
+        return preferred
+    fallback = root / "cookies" / "cookies.txt"
+    if fallback.exists():
+        return fallback
+    return root / "cookies.txt"  # legacy location
+
+_COOKIES_FILE = _find_cookies_file()
+
+
+def _yt_dlp_strategies() -> list[dict]:
+    """Return a list of yt-dlp option dicts to try in order."""
+    base = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "format": "bestaudio/best",
+        "remote_components": {"ejs:github"},
+    }
+
+    strategies = []
+
+    # If a cookies.txt file exists, try it first (most reliable)
+    if _COOKIES_FILE.exists():
+        strategies.append({**base, "cookiefile": str(_COOKIES_FILE)})
+
+    # Fallback strategies without cookies
+    strategies.extend([
+        {**base, "extractor_args": {"youtube": {"player_client": ["android"]}}},
+        {**base, "extractor_args": {"youtube": {"player_client": ["web"]}}},
+        {**base},
+    ])
+    return strategies
+
+
+def _yt_dlp_extract(url: str, opts: dict) -> dict:
+    """Run yt-dlp extract_info synchronously (called via to_thread)."""
+    import yt_dlp
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False)
 
 
 async def _download_youtube_audio(url: str, job_id: str) -> Path:
     """Download audio from a YouTube VOD using yt-dlp + FFmpeg.
 
-    Returns path to the downloaded audio file.
+    Tries multiple player-client strategies to work around YouTube's
+    format restrictions.  Returns path to the downloaded WAV file.
     """
     import yt_dlp
 
     output_path = UPLOAD_DIR / f"{job_id}_yt_audio.wav"
-    ydl_opts = {
+
+    base_opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
-        "format": "bestaudio/best",
         "outtmpl": str(UPLOAD_DIR / f"{job_id}_yt_raw.%(ext)s"),
         "postprocessors": [
             {
@@ -121,27 +209,60 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
                 "preferredquality": "0",
             }
         ],
+        "remote_components": {"ejs:github"},
     }
+    if _COOKIES_FILE.exists():
+        base_opts["cookiefile"] = str(_COOKIES_FILE)
 
-    def _download():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+    # Strategies ordered from most-reliable to least
+    strategies: list[dict[str, Any]] = [
+        {**base_opts, "format": "bestaudio/best"},                                      # default client
+        {**base_opts, "format": "bestaudio/best",
+         "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # web client
+        {**base_opts, "format": "bestaudio/best",
+         "extractor_args": {"youtube": {"player_client": ["android"]}}},                # android client
+        {**base_opts, "format": "bestaudio[ext=m4a]/bestaudio/best"},                   # more flexible format
+        {**base_opts, "format": "bestaudio[ext=webm]/bestaudio/best",
+         "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # webm via web
+    ]
 
-    await asyncio.to_thread(_download)
-
-    # Find the output file (yt-dlp may name it differently)
-    wav_pattern = UPLOAD_DIR / f"{job_id}_yt_raw.wav"
-    if wav_pattern.exists():
-        wav_pattern.rename(output_path)
-    else:
-        # Search for any file starting with the pattern
+    last_err: Exception | None = None
+    for strat in strategies:
+        # Clean up any leftover files from previous attempts
         for f in UPLOAD_DIR.glob(f"{job_id}_yt_raw.*"):
-            f.rename(output_path)
-            break
-        else:
-            raise RuntimeError("yt-dlp did not produce an audio output file")
+            try:
+                f.unlink()
+            except Exception:
+                pass
 
-    return output_path
+        try:
+            def _download(opts: dict = strat):
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+
+            await asyncio.to_thread(_download)
+
+            # Find the output file (yt-dlp may name it differently)
+            wav_pattern = UPLOAD_DIR / f"{job_id}_yt_raw.wav"
+            if wav_pattern.exists():
+                wav_pattern.rename(output_path)
+                return output_path
+
+            for f in UPLOAD_DIR.glob(f"{job_id}_yt_raw.*"):
+                f.rename(output_path)
+                return output_path
+
+        except Exception as exc:
+            last_err = exc
+            logger.warning("yt_download_strategy_failed",
+                           strategy=strat.get("extractor_args", "default"),
+                           format=strat.get("format"),
+                           error=str(exc)[:150])
+            continue
+
+    raise RuntimeError(
+        f"All yt-dlp download strategies failed: {str(last_err)[:200]}"
+    )
 
 
 @router.post("/resolve", response_model=YouTubeResolveResponse)
@@ -290,3 +411,649 @@ async def download_and_analyze(
         "file_name": display_name,
         "created_at": now.isoformat(),
     }
+
+
+# ────────────────────────────────────────────────────────
+# YouTube Live Stream Transcription
+# ────────────────────────────────────────────────────────
+
+
+async def _load_keyword_rules(db_session_factory: Any) -> list[dict]:
+    """Load enabled keyword rules from DB."""
+    if db_session_factory is None:
+        return []
+    try:
+        from sqlalchemy import select as sa_select
+        from tg_common.db.orm_models import KeywordRuleORM
+
+        async with db_session_factory() as _db:
+            stmt = sa_select(KeywordRuleORM).where(KeywordRuleORM.enabled == True)
+            res = await _db.execute(stmt)
+            rows = res.scalars().all()
+            return [
+                {
+                    "rule_id": str(r.rule_id),
+                    "keyword": r.keyword,
+                    "match_type": r.match_type,
+                    "severity": r.severity,
+                    "category": r.category,
+                }
+                for r in rows
+            ]
+    except Exception:
+        logger.warning("keyword_rules_load_failed")
+        return []
+
+
+def _match_keywords(text: str, rules: list[dict]) -> list[dict]:
+    """Match text against keyword rules. Returns list of matching rule dicts with metadata."""
+    import re as _re
+
+    text_lower = text.lower()
+    matches: list[dict] = []
+    for rule in rules:
+        kw = rule["keyword"]
+        hit = False
+        if rule["match_type"] == "exact":
+            hit = kw.lower() in text_lower
+        elif rule["match_type"] == "regex":
+            try:
+                hit = bool(_re.search(kw, text, _re.IGNORECASE))
+            except _re.error:
+                pass
+        elif rule["match_type"] == "fuzzy":
+            kw_words = kw.lower().split()
+            hit = all(w in text_lower for w in kw_words)
+        elif rule["match_type"] == "phonetic":
+            hit = kw.lower() in text_lower
+
+        if hit:
+            matches.append({
+                "rule_id": rule["rule_id"],
+                "keyword": kw,
+                "match_type": rule["match_type"],
+                "severity": rule.get("severity", "medium"),
+                "category": rule.get("category", ""),
+            })
+    return matches
+
+
+async def _publish_and_dispatch_alerts(
+    matches: list[dict],
+    text: str,
+    stream_id: str,
+    session_id: str,
+    stream_name: str,
+    redis: Any,
+    db_session_factory: Any,
+) -> None:
+    """Publish keyword match events to Redis and dispatch to alert channels."""
+    if not matches:
+        return
+
+    for m in matches:
+        alert_id = str(_uuid.uuid4())
+        alert_payload = {
+            "alert_id": alert_id,
+            "alert_type": "keyword",
+            "severity": m["severity"],
+            "matched_text": m["keyword"],
+            "match_type": m["match_type"],
+            "surrounding_context": text[:200],
+            "stream_id": stream_id,
+            "stream_name": stream_name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Publish to match_events channel for WebSocket alert feed
+        if redis:
+            await redis.publish(
+                f"match_events:{stream_id}",
+                json.dumps(alert_payload),
+            )
+
+        # Persist alert to DB
+        if db_session_factory is not None:
+            try:
+                from tg_common.db.orm_models import AlertORM
+                async with db_session_factory() as _db:
+                    db_severity = (m["severity"] or "medium").lower()
+                    if db_severity not in ("low", "medium", "high", "critical"):
+                        db_severity = "medium"
+                    db_match_type = m["match_type"] or "exact"
+                    if db_match_type not in ("exact", "fuzzy", "regex", "sentiment_threshold", "intent"):
+                        db_match_type = "exact"
+
+                    alert_orm = AlertORM(
+                        alert_id=_uuid.UUID(alert_id),
+                        session_id=_uuid.UUID(session_id),
+                        stream_id=_uuid.UUID(stream_id),
+                        alert_type="keyword",
+                        severity=db_severity,
+                        matched_rule=m["rule_id"],
+                        match_type=db_match_type,
+                        matched_text=m["keyword"],
+                        surrounding_context=text[:200],
+                        asr_backend_used="deepgram_nova2",
+                    )
+                    _db.add(alert_orm)
+                    await _db.commit()
+            except Exception:
+                logger.exception("alert_db_persist_error", alert_id=alert_id)
+
+    # Dispatch to external channels (webhook, slack, email)
+    await _dispatch_to_external_channels(matches, text, stream_name, db_session_factory)
+
+
+async def _dispatch_to_external_channels(
+    matches: list[dict],
+    text: str,
+    stream_name: str,
+    db_session_factory: Any,
+) -> None:
+    """Send alerts to configured external channels (webhook, slack, email)."""
+    if db_session_factory is None:
+        return
+
+    # Load enabled channels
+    channels: list[dict] = []
+    try:
+        from sqlalchemy import select as sa_select
+        from tg_common.db.orm_models import AlertChannelConfigORM
+
+        async with db_session_factory() as _db:
+            stmt = sa_select(AlertChannelConfigORM).where(AlertChannelConfigORM.enabled == True)
+            res = await _db.execute(stmt)
+            rows = res.scalars().all()
+            channels = [
+                {
+                    "channel_id": str(r.channel_id),
+                    "channel_type": str(r.channel_type),
+                    "config": r.config or {},
+                    "min_severity": str(r.min_severity) if r.min_severity else None,
+                    "alert_types": r.alert_types,
+                }
+                for r in rows
+            ]
+    except Exception:
+        logger.warning("external_channels_load_failed")
+        return
+
+    if not channels:
+        return
+
+    severity_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+    for m in matches:
+        alert_payload = {
+            "alert_type": "keyword",
+            "severity": m["severity"],
+            "matched_text": m["keyword"],
+            "match_type": m["match_type"],
+            "surrounding_context": text[:200],
+            "stream_name": stream_name,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        for ch in channels:
+            min_sev = ch.get("min_severity")
+            if min_sev and min_sev in severity_order:
+                alert_sev = severity_order.get(m["severity"] or "medium", 1)
+                if alert_sev < severity_order[min_sev]:
+                    continue
+
+            allowed_types = ch.get("alert_types")
+            if allowed_types and "keyword" not in allowed_types:
+                continue
+
+            config = ch.get("config", {})
+            ch_type = ch["channel_type"]
+
+            try:
+                if ch_type == "webhook":
+                    url = config.get("webhook_url") or config.get("url", "")
+                    if url:
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                            await client.post(url, json=alert_payload)
+                        logger.info("live_alert_dispatched_webhook",
+                                    channel_id=ch["channel_id"],
+                                    keyword=m["keyword"])
+
+                elif ch_type == "slack":
+                    webhook_url = config.get("webhook_url") or config.get("url", "")
+                    if webhook_url:
+                        slack_msg = {
+                            "text": (
+                                f":rotating_light: *VoxSentinel Live Alert*\n"
+                                f"*Type:* keyword | *Severity:* {m['severity']}\n"
+                                f"*Match:* {m['keyword']}\n"
+                                f"*Stream:* {stream_name}\n"
+                                f"*Context:* {text[:200]}"
+                            ),
+                        }
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                            await client.post(webhook_url, json=slack_msg)
+                        logger.info("live_alert_dispatched_slack",
+                                    channel_id=ch["channel_id"],
+                                    keyword=m["keyword"])
+
+                elif ch_type == "email":
+                    await _send_email_alert(config, m, text, stream_name)
+
+            except Exception:
+                logger.exception("live_alert_dispatch_error",
+                                 channel_type=ch_type,
+                                 channel_id=ch["channel_id"])
+
+
+async def _send_email_alert(
+    config: dict,
+    match: dict,
+    text: str,
+    stream_name: str,
+) -> None:
+    """Send an alert email via SMTP. Config must contain smtp_host, smtp_port,
+    smtp_user, smtp_password, from_address, to_address."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    smtp_host = config.get("smtp_host") or os.getenv("TG_SMTP_HOST", "")
+    smtp_port = int(config.get("smtp_port") or os.getenv("TG_SMTP_PORT", "587"))
+    smtp_user = config.get("smtp_user") or config.get("username") or os.getenv("TG_SMTP_USER", "")
+    smtp_pass = config.get("smtp_password") or config.get("password") or os.getenv("TG_SMTP_PASSWORD", "")
+    from_addr = config.get("from_address") or config.get("from") or os.getenv("TG_SMTP_FROM", smtp_user)
+    to_addr = config.get("to_address") or config.get("to") or config.get("email_address", "")
+
+    if not smtp_host or not to_addr:
+        logger.warning("email_alert_missing_config",
+                       has_host=bool(smtp_host), has_to=bool(to_addr))
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"[VoxSentinel] {match['severity'].upper()} Alert: {match['keyword']}"
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+
+    body_text = (
+        f"VoxSentinel Keyword Alert\n"
+        f"========================\n\n"
+        f"Severity: {match['severity']}\n"
+        f"Keyword:  {match['keyword']}\n"
+        f"Match Type: {match['match_type']}\n"
+        f"Stream:   {stream_name}\n\n"
+        f"Context:\n{text[:500]}\n\n"
+        f"Time: {datetime.now(timezone.utc).isoformat()}\n"
+    )
+
+    body_html = (
+        f"<h2 style='color:#dc2626'>VoxSentinel Alert</h2>"
+        f"<table style='border-collapse:collapse'>"
+        f"<tr><td><b>Severity:</b></td><td>{match['severity']}</td></tr>"
+        f"<tr><td><b>Keyword:</b></td><td>{match['keyword']}</td></tr>"
+        f"<tr><td><b>Match Type:</b></td><td>{match['match_type']}</td></tr>"
+        f"<tr><td><b>Stream:</b></td><td>{stream_name}</td></tr>"
+        f"</table>"
+        f"<p><b>Context:</b><br>{text[:500]}</p>"
+        f"<p style='color:#666;font-size:12px'>{datetime.now(timezone.utc).isoformat()}</p>"
+    )
+
+    msg.attach(MIMEText(body_text, "plain"))
+    msg.attach(MIMEText(body_html, "html"))
+
+    def _send():
+        use_ssl = smtp_port == 465
+        if use_ssl:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+        if smtp_user and smtp_pass:
+            server.login(smtp_user, smtp_pass)
+        server.sendmail(from_addr, [to_addr], msg.as_string())
+        server.quit()
+
+    await asyncio.to_thread(_send)
+    logger.info("email_alert_sent", to=to_addr, keyword=match["keyword"])
+
+
+async def _live_transcribe_loop(
+    stream_id: str,
+    session_id: str,
+    youtube_url: str,
+    redis: Any,
+    db_session_factory: Any = None,
+) -> None:
+    """Background task: capture audio from a YouTube live stream in chunks
+    and send each chunk to Deepgram pre-recorded API for transcription.
+
+    Results are published to Redis so the WebSocket relay can forward them
+    to connected dashboard clients.
+    """
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        logger.error("ffmpeg_not_found_for_live")
+        if redis:
+            await redis.publish(
+                f"redacted_tokens:{stream_id}",
+                json.dumps({"text": "[Error: FFmpeg not found]", "is_final": True}),
+            )
+        return
+
+    api_key = os.getenv("TG_DEEPGRAM_API_KEY", "")
+    if not api_key:
+        logger.error("deepgram_key_missing_for_live")
+        return
+
+    # Resolve HLS URL from YouTube
+    try:
+        result = await _resolve_youtube(youtube_url)
+        if not result["is_live"]:
+            if redis:
+                await redis.publish(
+                    f"redacted_tokens:{stream_id}",
+                    json.dumps({"text": "[Stream is not live]", "is_final": True}),
+                )
+            return
+        hls_url = result.get("hls_url")
+        if not hls_url:
+            if redis:
+                await redis.publish(
+                    f"redacted_tokens:{stream_id}",
+                    json.dumps({"text": "[Could not get HLS URL from YouTube]", "is_final": True}),
+                )
+            return
+    except Exception as exc:
+        logger.exception("live_resolve_error", url=youtube_url)
+        if redis:
+            await redis.publish(
+                f"redacted_tokens:{stream_id}",
+                json.dumps({"text": f"[Resolve error: {str(exc)[:100]}]", "is_final": True}),
+            )
+        return
+
+    logger.info("live_transcription_starting", stream_id=stream_id, hls_url=hls_url[:80])
+
+    chunk_duration = 10  # seconds per chunk
+    chunk_counter = 0
+
+    # Load keyword rules once at start (reload periodically)
+    keyword_rules = await _load_keyword_rules(db_session_factory)
+    rules_refresh_counter = 0
+
+    try:
+        while True:
+            # Check if task has been cancelled
+            if asyncio.current_task() and asyncio.current_task().cancelled():
+                break
+
+            chunk_path = UPLOAD_DIR / f"live_{stream_id}_{chunk_counter}.wav"
+            try:
+                # Use FFmpeg to capture a chunk of audio from the HLS stream
+                cmd = [
+                    ffmpeg_bin,
+                    "-y",
+                    "-i", hls_url,
+                    "-t", str(chunk_duration),
+                    "-vn",
+                    "-acodec", "pcm_s16le",
+                    "-ar", "16000",
+                    "-ac", "1",
+                    str(chunk_path),
+                ]
+
+                proc = await asyncio.to_thread(
+                    subprocess.run, cmd, capture_output=True, text=True,
+                    timeout=chunk_duration + 30,
+                )
+
+                if proc.returncode != 0 or not chunk_path.exists() or chunk_path.stat().st_size == 0:
+                    logger.warning("live_chunk_capture_failed",
+                                   rc=proc.returncode, stderr=proc.stderr[:200] if proc.stderr else "")
+                    # Brief pause before retry
+                    await asyncio.sleep(2)
+                    chunk_counter += 1
+                    continue
+
+                # Send chunk to Deepgram pre-recorded API
+                audio_data = await asyncio.to_thread(chunk_path.read_bytes)
+
+                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+                    resp = await client.post(
+                        "https://api.deepgram.com/v1/listen",
+                        headers={
+                            "Authorization": f"Token {api_key}",
+                            "Content-Type": "audio/wav",
+                        },
+                        params={
+                            "model": "nova-2",
+                            "smart_format": "true",
+                            "diarize": "true",
+                            "utterances": "true",
+                            "punctuate": "true",
+                        },
+                        content=audio_data,
+                    )
+                    resp.raise_for_status()
+                    dg_result = resp.json()
+
+                # Parse results and publish to Redis
+                results = dg_result.get("results", {})
+                utterances = results.get("utterances") or []
+                published_count = 0
+                chunk_texts: list[str] = []
+
+                if utterances:
+                    for utt in utterances:
+                        speaker = utt.get("speaker")
+                        text = utt.get("transcript", "").strip()
+                        if text:
+                            chunk_texts.append(text)
+                            if redis:
+                                await redis.publish(
+                                    f"redacted_tokens:{stream_id}",
+                                    json.dumps({
+                                        "text": text,
+                                        "speaker_id": f"speaker_{speaker}" if speaker is not None else None,
+                                        "is_final": True,
+                                        "confidence": utt.get("confidence", 0),
+                                    }),
+                                )
+                                published_count += 1
+                else:
+                    # Try channels fallback
+                    channels = results.get("channels") or []
+                    if channels:
+                        try:
+                            alt = channels[0]["alternatives"][0]
+                            text = alt.get("transcript", "").strip()
+                            if text:
+                                chunk_texts.append(text)
+                                if redis:
+                                    await redis.publish(
+                                        f"redacted_tokens:{stream_id}",
+                                        json.dumps({
+                                            "text": text,
+                                            "is_final": True,
+                                            "confidence": alt.get("confidence", 0),
+                                        }),
+                                    )
+                                    published_count += 1
+                        except (KeyError, IndexError):
+                            pass
+
+                # ── Keyword matching on this chunk ──
+                if chunk_texts and keyword_rules:
+                    combined_text = " ".join(chunk_texts)
+                    matches = _match_keywords(combined_text, keyword_rules)
+                    if matches:
+                        logger.info("live_keyword_match",
+                                    stream_id=stream_id,
+                                    chunk=chunk_counter,
+                                    keywords=[m["keyword"] for m in matches])
+                        await _publish_and_dispatch_alerts(
+                            matches, combined_text,
+                            stream_id, session_id,
+                            stream_name=f"[YT Live] {youtube_url[:50]}",
+                            redis=redis,
+                            db_session_factory=db_session_factory,
+                        )
+
+                # Refresh rules every 30 chunks (~5 min)
+                rules_refresh_counter += 1
+                if rules_refresh_counter >= 30:
+                    keyword_rules = await _load_keyword_rules(db_session_factory)
+                    rules_refresh_counter = 0
+
+                logger.info(
+                    "live_chunk_transcribed",
+                    stream_id=stream_id,
+                    chunk=chunk_counter,
+                    tokens_published=published_count,
+                )
+                chunk_counter += 1
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception("live_chunk_error", stream_id=stream_id, chunk=chunk_counter)
+                await asyncio.sleep(3)
+                chunk_counter += 1
+            finally:
+                # Cleanup chunk file
+                try:
+                    if chunk_path.exists():
+                        chunk_path.unlink()
+                except Exception:
+                    pass
+
+    except asyncio.CancelledError:
+        logger.info("live_transcription_cancelled", stream_id=stream_id)
+    except Exception:
+        logger.exception("live_transcription_fatal", stream_id=stream_id)
+    finally:
+        # Clean up task reference
+        _live_tasks.pop(stream_id, None)
+        logger.info("live_transcription_stopped", stream_id=stream_id)
+
+
+class YouTubeLiveRequest(BaseModel):
+    url: str = Field(..., description="YouTube live stream URL")
+    name: str = Field(default="", description="Optional stream name")
+
+
+@router.post("/live-transcribe")
+async def start_live_transcription(
+    request: Request,
+    body: YouTubeLiveRequest,
+    db: Any = Depends(get_db_session),
+    redis: Any = Depends(get_redis),
+) -> dict:
+    """Start live transcription of a YouTube live stream.
+
+    Resolves the URL, checks it's live, then starts a background task
+    that captures audio in chunks and transcribes via Deepgram.
+    Returns stream_id for WebSocket subscription.
+    """
+    if not _is_youtube_url(body.url):
+        raise HTTPException(status_code=400, detail="URL does not appear to be a YouTube link")
+
+    # Quick liveness check
+    try:
+        result = await _resolve_youtube(body.url)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not resolve YouTube URL: {str(exc)[:200]}")
+
+    if not result["is_live"]:
+        raise HTTPException(
+            status_code=400,
+            detail="This YouTube stream is not currently live. Use 'Download & Analyze' for recorded videos.",
+        )
+
+    from tg_common.db.orm_models import SessionORM, StreamORM
+
+    stream_id = _uuid.uuid4()
+    session_id = _uuid.uuid4()
+    title = result.get("title", "YouTube Live")
+    display_name = body.name or f"[YT Live] {title}"
+
+    # Create Stream + Session in DB
+    stream = StreamORM(
+        stream_id=stream_id,
+        name=display_name,
+        source_type="hls",  # YouTube live is delivered via HLS
+        source_url=body.url,
+        asr_backend="deepgram_nova2",
+        status="active",
+        session_id=session_id,
+        metadata_={"youtube_url": body.url, "title": title, "is_live": True, "stream_type": "youtube_live"},
+    )
+    session = SessionORM(
+        session_id=session_id,
+        stream_id=stream_id,
+        asr_backend_used="deepgram_nova2",
+    )
+    if db is not None:
+        db.add(stream)
+        db.add(session)
+        await db.commit()
+
+    # Start background live transcription
+    db_factory = getattr(request.app.state, "db_session_factory", None)
+    task = asyncio.create_task(
+        _live_transcribe_loop(
+            str(stream_id), str(session_id), body.url, redis,
+            db_session_factory=db_factory,
+        )
+    )
+    _live_tasks[str(stream_id)] = task
+
+    return {
+        "stream_id": str(stream_id),
+        "session_id": str(session_id),
+        "name": display_name,
+        "title": title,
+        "is_live": True,
+        "status": "active",
+    }
+
+
+@router.post("/stop-live/{stream_id}")
+async def stop_live_transcription(
+    stream_id: str,
+    db: Any = Depends(get_db_session),
+) -> dict:
+    """Stop a running YouTube live transcription."""
+    task = _live_tasks.get(stream_id)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        _live_tasks.pop(stream_id, None)
+
+    # Update stream status in DB
+    if db is not None:
+        from sqlalchemy import select
+        from tg_common.db.orm_models import StreamORM
+
+        result = await db.execute(
+            select(StreamORM).where(StreamORM.stream_id == _uuid.UUID(stream_id))
+        )
+        stream = result.scalar_one_or_none()
+        if stream:
+            stream.status = "stopped"
+            await db.commit()
+
+    return {"status": "stopped", "stream_id": stream_id}
+
+
+@router.get("/live-status/{stream_id}")
+async def get_live_status(stream_id: str) -> dict:
+    """Check if a YouTube live transcription is still running."""
+    task = _live_tasks.get(stream_id)
+    is_running = task is not None and not task.done()
+    return {"stream_id": stream_id, "is_running": is_running}

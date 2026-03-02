@@ -172,35 +172,6 @@ export interface AlertChannelCreateRequest {
   enabled?: boolean;
 }
 
-export interface SearchHit {
-  segment_id: string;
-  session_id: string;
-  stream_id: string;
-  stream_name?: string | null;
-  speaker_id?: string | null;
-  timestamp: string;
-  text: string;
-  sentiment_label?: string | null;
-  score?: number | null;
-}
-
-export interface SearchResponse {
-  results: SearchHit[];
-  total: number;
-}
-
-export interface SearchRequest {
-  query: string;
-  search_type?: string;
-  stream_ids?: string[] | null;
-  date_from?: string | null;
-  date_to?: string | null;
-  speaker_id?: string | null;
-  language?: string | null;
-  limit?: number;
-  offset?: number;
-}
-
 export interface TranscriptSegment {
   segment_id: string;
   speaker_id: string | null;
@@ -327,14 +298,6 @@ export const updateAlertChannel = (
 
 export const deleteAlertChannel = (id: string) =>
   apiFetch<void>(`/alert-channels/${id}`, { method: "DELETE" });
-
-// ── Search ──
-
-export const searchTranscripts = (body: SearchRequest) =>
-  apiFetch<SearchResponse>("/search", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
 
 // ── Transcripts ──
 
@@ -507,3 +470,28 @@ export const youtubeDownloadAnalyze = (url: string) =>
     method: "POST",
     body: JSON.stringify({ url }),
   });
+
+// ── YouTube Live Transcription ──
+
+export interface YouTubeLiveResponse {
+  stream_id: string;
+  session_id: string;
+  name: string;
+  title: string;
+  is_live: boolean;
+  status: string;
+}
+
+export const startYouTubeLive = (url: string, name?: string) =>
+  apiFetch<YouTubeLiveResponse>("/youtube/live-transcribe", {
+    method: "POST",
+    body: JSON.stringify({ url, name: name || "" }),
+  });
+
+export const stopYouTubeLive = (streamId: string) =>
+  apiFetch<{ status: string; stream_id: string }>(`/youtube/stop-live/${streamId}`, {
+    method: "POST",
+  });
+
+export const getYouTubeLiveStatus = (streamId: string) =>
+  apiFetch<{ stream_id: string; is_running: boolean }>(`/youtube/live-status/${streamId}`);

@@ -119,7 +119,7 @@ async def update_alert_channel(
     )
 
 
-@router.delete("/{channel_id}", status_code=204)
+@router.delete("/{channel_id}", status_code=204, response_model=None)
 async def delete_alert_channel(
     channel_id: UUID,
     db: AsyncSession = Depends(get_db_session),

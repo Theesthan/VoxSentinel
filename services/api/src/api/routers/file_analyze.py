@@ -41,7 +41,7 @@ from api.schemas.file_analyze_schemas import (
     FileAnalyzeSummary,
 )
 
-from tg_common.db.orm_models import AlertORM, SessionORM, StreamORM, TranscriptSegmentORM
+from tg_common.db.orm_models import AlertChannelConfigORM, AlertORM, SessionORM, StreamORM, TranscriptSegmentORM
 
 logger = structlog.get_logger()
 
@@ -79,6 +79,133 @@ def _utc_now() -> datetime:
 def _find_ffmpeg() -> str | None:
     """Return the path to ffmpeg executable, or None."""
     return shutil.which("ffmpeg")
+
+
+async def _dispatch_alerts_to_channels(
+    alerts_out: list[FileAnalyzeAlert],
+    stream_name: str,
+    db_session_factory: Any,
+) -> None:
+    """Dispatch alerts to all enabled alert channels (webhook, slack, email).
+
+    Loads configured channels from DB and sends alert payloads to each one.
+    """
+    if not alerts_out or db_session_factory is None:
+        return
+
+    channels: list[dict] = []
+    try:
+        from sqlalchemy import select as sa_select
+        async with db_session_factory() as _db:
+            stmt = sa_select(AlertChannelConfigORM).where(AlertChannelConfigORM.enabled == True)
+            res = await _db.execute(stmt)
+            rows = res.scalars().all()
+            channels = [
+                {
+                    "channel_id": str(r.channel_id),
+                    "channel_type": str(r.channel_type),
+                    "config": r.config or {},
+                    "min_severity": str(r.min_severity) if r.min_severity else None,
+                    "alert_types": r.alert_types,
+                }
+                for r in rows
+            ]
+    except Exception:
+        logger.warning("dispatch_channels_load_failed")
+        return
+
+    if not channels:
+        return
+
+    severity_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+    for alert in alerts_out:
+        alert_payload = {
+            "alert_id": str(alert.alert_id),
+            "alert_type": alert.alert_type,
+            "severity": alert.severity,
+            "matched_text": alert.matched_text,
+            "match_type": alert.match_type,
+            "speaker_id": alert.speaker_id,
+            "surrounding_context": alert.surrounding_context,
+            "stream_name": stream_name,
+            "timestamp": _utc_now().isoformat(),
+        }
+
+        for ch in channels:
+            # Check severity filter
+            min_sev = ch.get("min_severity")
+            if min_sev and min_sev in severity_order:
+                alert_sev = severity_order.get(alert.severity or "medium", 1)
+                if alert_sev < severity_order[min_sev]:
+                    continue
+
+            # Check alert type filter
+            allowed_types = ch.get("alert_types")
+            if allowed_types and alert.alert_type not in allowed_types:
+                continue
+
+            config = ch.get("config", {})
+            ch_type = ch["channel_type"]
+
+            try:
+                if ch_type == "webhook":
+                    url = config.get("webhook_url") or config.get("url", "")
+                    if url:
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                            await client.post(url, json=alert_payload)
+                        logger.info("alert_dispatched_webhook",
+                                    channel_id=ch["channel_id"],
+                                    alert_id=str(alert.alert_id))
+
+                elif ch_type == "slack":
+                    webhook_url = config.get("webhook_url") or config.get("url", "")
+                    if webhook_url:
+                        slack_msg = {
+                            "text": (
+                                f":rotating_light: *VoxSentinel Alert*\n"
+                                f"*Type:* {alert.alert_type} | *Severity:* {alert.severity}\n"
+                                f"*Match:* {alert.matched_text}\n"
+                                f"*Stream:* {stream_name}\n"
+                                f"*Context:* {(alert.surrounding_context or '')[:200]}"
+                            ),
+                        }
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                            await client.post(webhook_url, json=slack_msg)
+                        logger.info("alert_dispatched_slack",
+                                    channel_id=ch["channel_id"],
+                                    alert_id=str(alert.alert_id))
+
+                elif ch_type == "email":
+                    email_addr = config.get("email_address") or config.get("to", "") or config.get("to_address", "")
+                    smtp_host = config.get("smtp_host") or os.getenv("TG_SMTP_HOST", "")
+                    if smtp_host and email_addr:
+                        # Use real SMTP email sending
+                        from api.routers.youtube import _send_email_alert
+                        match_info = {
+                            "keyword": alert.matched_text or "",
+                            "severity": alert.severity or "medium",
+                            "match_type": alert.match_type or "exact",
+                        }
+                        try:
+                            await _send_email_alert(config, match_info, alert.surrounding_context or "", stream_name)
+                            logger.info("alert_dispatched_email",
+                                        channel_id=ch["channel_id"],
+                                        email=email_addr)
+                        except Exception:
+                            logger.exception("alert_email_send_error",
+                                             channel_id=ch["channel_id"],
+                                             email=email_addr)
+                    else:
+                        logger.info("alert_dispatch_email_skipped",
+                                    channel_id=ch["channel_id"],
+                                    email=email_addr,
+                                    reason="smtp_host not configured in channel config")
+
+            except Exception:
+                logger.exception("alert_dispatch_error",
+                                 channel_type=ch_type,
+                                 channel_id=ch["channel_id"])
 
 
 async def _extract_audio_from_video(video_path: Path, job_id: str) -> Path:
@@ -427,6 +554,14 @@ async def _run_pipeline(
                             segments=len(transcript_out), alerts=len(alerts_out))
             except Exception:
                 logger.exception("file_analyze_db_persist_error", job_id=job_id)
+
+        # ── 6b. Dispatch alerts to configured channels ──
+        if alerts_out:
+            try:
+                stream_name = job.get("file_name", "")
+                await _dispatch_alerts_to_channels(alerts_out, stream_name, db_session_factory)
+            except Exception:
+                logger.exception("file_analyze_alert_dispatch_error", job_id=job_id)
 
         # ── 7. Index transcript segments into Elasticsearch ──
         if es_client is not None:

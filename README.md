@@ -29,8 +29,8 @@ A low-latency, pluggable platform that ingests live audio/video streams and uplo
 ┌─────────────────────────────────────────────────────────────────────────┐
 │               API GATEWAY  :8010  │  DASHBOARD  :5173                    │
 │  FastAPI REST + WebSocket          │  React 19 + Vite + Tailwind + shadcn│
-│  /docs (Swagger UI)               │  Live transcript, alerts, search     │
-│  /api/v1/* endpoints               │  File analyze, settings             │
+│  /docs (Swagger UI)               │  Live transcript, alerts             │
+│  /api/v1/* endpoints               │  File analyze, YouTube live, settings│
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -150,15 +150,33 @@ npm run dev
 | Dashboard | http://localhost:5173 | VoxSentinel UI |
 | Elasticsearch | http://localhost:9200 | Cluster info JSON |
 
-### 8. Try it out
+### 8. YouTube Live Transcription (cookies setup)
+
+YouTube requires browser cookies to extract HLS stream URLs. VoxSentinel looks
+for cookie files in this priority order:
+1. `TG_COOKIES_FILE` environment variable (absolute path)
+2. `cookies/vidcookie.txt` — YouTube-only cookies (**recommended**)
+3. `cookies/cookies.txt` — general browser cookie export
+4. `cookies.txt` in the VoxSentinel root (legacy location)
+
+To export YouTube cookies:
+1. Install the **"Get cookies.txt LOCALLY"** extension in your browser
+2. Visit youtube.com while logged in and export cookies
+3. Save the file as `cookies/vidcookie.txt` inside the VoxSentinel directory
+
+> **Status (tested 2026-03-03):** Full pipeline verified — `resolve` returns
+> `is_live: true` with HLS URL, `live-transcribe` starts the background task,
+> FFmpeg captures audio chunks, Deepgram transcribes in real time.
+
+### 9. Try it out
 
 1. Open **http://localhost:5173** in your browser
 2. Go to the **File Analyze** tab
 3. Upload an audio/video file (.mp3, .m4a, .mp4, .wav, etc.)
 4. Watch the progress bar — results appear when processing completes
 5. Check the **Alerts** tab for keyword match alerts
-6. Use the **Search** tab to search transcripts
-7. Paste a YouTube URL to analyze a video from the web
+6. Paste a YouTube URL to analyze a video from the web
+7. For YouTube **live** streams, the system auto-detects liveness and starts real-time transcription
 
 ---
 
@@ -186,14 +204,15 @@ cloudflared tunnel --url http://localhost:8010
 ## Key Features
 
 - **Live Stream Monitoring** — Connect RTSP cameras, HLS/DASH streams, or microphone input
+- **YouTube Live Transcription** — Paste a YouTube live URL, auto-detect if stream is live, capture audio via HLS + FFmpeg, transcribe in real time via Deepgram
 - **File Analyze** — Upload audio files for batch transcription via Deepgram pre-recorded API
 - **Keyword Detection** — Exact match (Aho-Corasick), fuzzy match (RapidFuzz), regex patterns
 - **Legislative Tracking** — Pre-configured rule sets for monitoring government audio streams for bills, votes, committees, enactment language
 - **Speaker Diarization** — Identify and track speakers via pyannote.audio
 - **Sentiment Analysis** — DistilBERT-based sentiment scoring per segment
 - **PII Redaction** — Microsoft Presidio + spaCy for automatic PII removal
-- **Multi-Channel Alerts** — WebSocket, Slack, webhooks, email, SMS
-- **Full-Text Search** — Elasticsearch-powered transcript search with highlighting
+- **Multi-Channel Alerts** — WebSocket, Slack, webhooks (dispatched automatically on keyword match)
+- **Full-Text Search** — *Removed in v1.1 — Elasticsearch indexing available via API for future use*
 - **Audit Trail** — SHA-256 hashed transcript segments with Merkle tree verification
 
 ## Running Tests

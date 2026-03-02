@@ -146,7 +146,7 @@ async def update_rule(
     )
 
 
-@router.delete("/{rule_id}", status_code=204)
+@router.delete("/{rule_id}", status_code=204, response_model=None)
 async def delete_rule(
     rule_id: _uuid.UUID,
     db: Any = Depends(get_db_session),

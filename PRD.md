@@ -21,7 +21,7 @@ Organizations operating surveillance systems, contact centers, educational insti
 
 ### Problem Being Solved
 - **Latency**: Existing batch-transcription tools (30–60 s chunk-based) introduce unacceptable delays for safety-critical or compliance-critical alerting.
-- **Fragmentation**: Teams currently stitch together separate tools for ASR, keyword search, sentiment, diarization, and alerting with no unified pipeline.
+- **Fragmentation**: Teams currently stitch together separate tools for ASR, keyword detection, sentiment, diarization, and alerting with no unified pipeline.
 - **Vendor Lock-In**: Relying on a single ASR vendor creates risk; there is no easy way to swap engines per stream based on language, cost, or accuracy requirements.
 - **Compliance Gaps**: PII leaks into transcripts, audit trails are missing, and there is no automated compliance keyword monitoring.
 - **Scalability**: Current approaches cannot handle ≥20 concurrent streams per GPU node with sub-300 ms latency.
@@ -51,8 +51,10 @@ Organizations operating surveillance systems, contact centers, educational insti
 9. **Agent-assist hooks**: structured event payloads for driving in-UI suggestions, compliance checklists, and next-best-action prompts.
 10. **PII redaction** via Microsoft Presidio + spaCy/GLiNER before general-access storage.
 11. **Immutable audit trail** with cryptographic hashing per transcript segment.
-12. **Full-text search** over historical transcripts via Elasticsearch/OpenSearch.
-13. **Post-session analytics dashboards** with keyword heatmaps, sentiment timelines, speaker contribution charts, and alert logs.
+12. ~~**Full-text search** over historical transcripts via Elasticsearch/OpenSearch.~~ *(Deferred to V2 — Elasticsearch integration removed from V1.)*
+13. **YouTube live-stream transcription** with automatic liveness detection and HLS audio extraction.
+14. **Live microphone transcription** via browser MediaRecorder streamed over WebSocket to Deepgram.
+15. **Post-session analytics dashboards** with keyword heatmaps, sentiment timelines, speaker contribution charts, and alert logs.
 14. **Automatic language detection** with per-language keyword banks and model routing.
 
 ### Non-Goals
@@ -86,7 +88,9 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 | DistilBERT sentiment classification | P1 |
 | PostgreSQL + TimescaleDB transcript storage | P0 |
 | Microsoft Presidio PII redaction | P0 |
-| Elasticsearch transcript indexing and search | P1 |
+| ~~Elasticsearch transcript indexing and search~~ *(deferred to V2)* | ~~P1~~ |
+| YouTube live-stream transcription (auto-detect + HLS) | P1 |
+| Live microphone transcription via WebSocket | P1 |
 | Operator dashboard (React + Vite + shadcn/ui + Framer Motion) | P1 |
 | pyannote.audio 3.x diarization | P1 |
 | Hot-reloadable keyword/rule configuration via REST API | P1 |
@@ -258,22 +262,20 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 
 ---
 
-### F9: Transcript Storage & Search
-**Description:** Persist all transcripts, alerts, and events in a time-series database and index them for full-text search.
+### F9: Transcript Storage
+**Description:** Persist all transcripts, alerts, and events in a time-series database.
 
-**User Story:** As a compliance officer, I want to search historical transcripts for a specific phrase and see highlighted results so that I can investigate past incidents.
+> **Note:** Full-text search via Elasticsearch was originally scoped here but has been **deferred to V2**. The search tab and `POST /search` endpoint have been removed from the V1 dashboard and API.
 
-**Priority:** P0 (PostgreSQL), P1 (Elasticsearch)
+**User Story:** As a compliance officer, I want all transcripts persisted so that I can retrieve and audit past sessions.
+
+**Priority:** P0 (PostgreSQL)
 
 **Acceptance Criteria:**
 - Transcript segments are stored in PostgreSQL + TimescaleDB as time-series records partitioned by day.
 - Each segment record includes: `segment_id`, `session_id`, `stream_id`, `speaker_id`, `start_time`, `end_time`, `text_redacted`, `text_original` (restricted), `sentiment_label`, `sentiment_score`, `language`, `asr_backend`, `confidence`, `segment_hash`, `created_at`.
 - Alerts are stored in a separate table with foreign keys to segments.
-- Elasticsearch indexes redacted transcript text with session, stream, speaker, and timestamp metadata.
-- Full-text search supports: exact phrase, fuzzy, regex, and Boolean queries.
-- Search results include highlighted matching text, surrounding context, and metadata.
 - Segment hashes (SHA-256 of `segment_id + text_original + timestamp`) are computed at write time and stored for audit verification.
-- Query response time: <500 ms for searches across 30 days of data (up to 10 M segments).
 
 ---
 
@@ -292,7 +294,7 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - Clicking a stream shows its live transcript with keyword highlights (color-coded by match type and speaker).
 - Alert panel shows recent alerts sorted by recency with severity indicators and animated entrance.
 - Sentiment gauge shows real-time sentiment per stream (rolling 30 s average).
-- Search tab provides full-text search across historical transcripts with result highlighting.
+- ~~Search tab provides full-text search across historical transcripts with result highlighting.~~ *(Removed in V1 — Elasticsearch deferred to V2.)*
 - Dashboard updates in real time via WebSocket connection proxied through nginx.
 - Dashboard is usable by a non-technical operator without training (clear labels, intuitive layout).
 - Responsive design supporting 1080p+ desktop screens (mobile not required for V1).
@@ -350,7 +352,7 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - Results include: transcript segments with speaker IDs, timestamps, confidence scores, keyword matches, and a summary (total segments, speakers detected, languages, total alerts).
 - **Keyword detection** runs against all loaded rule sets (exact/fuzzy/regex) for each transcript segment.
 - **Alerts are persisted** to PostgreSQL (`AlertORM`) so they appear in the dashboard Alerts tab.
-- **Transcript segments are indexed** in Elasticsearch (`transcripts` index) for full-text search.
+- ~~**Transcript segments are indexed** in Elasticsearch (`transcripts` index) for full-text search.~~ *(Deferred to V2.)*
 - `duration_seconds` is calculated and returned in job responses.
 - File analyze streams have `source_type="file"` and are excluded from the Live Streams tab in the dashboard.
 - Dashboard File Analyze tab provides drag-and-drop upload, YouTube URL input, job list, and detail view with transcript/alerts/summary sub-tabs.
@@ -366,7 +368,46 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - `POST /api/v1/youtube/resolve` resolves a YouTube URL to title, duration, and thumbnail via yt-dlp.
 - `POST /api/v1/youtube/download-analyze` downloads audio via yt-dlp + FFmpeg, then enters the file analyze pipeline.
 - Both live streams and VOD (video-on-demand) YouTube URLs are supported.
-- Results follow the same format as file analyze (transcript, alerts, summary, persisted to DB and ES).
+- Results follow the same format as file analyze (transcript, alerts, summary, persisted to DB).
+
+---
+
+### F13c: YouTube Live-Stream Transcription
+**Description:** Real-time transcription of YouTube live streams with automatic liveness detection and HLS audio extraction.
+
+**User Story:** As a legislative monitor, I want to paste a YouTube live-stream URL and get real-time transcription with keyword alerts as the session is happening.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- `POST /api/v1/youtube/resolve` auto-detects whether a YouTube URL is a live stream or VOD.
+  - Detection uses a multi-strategy approach: yt-dlp extraction (with optional cookies.txt authentication), falling back to HTTP page scraping for liveness indicators (`"isLive":true`, `"isLiveNow":true`, `"style":"LIVE"`).
+- Dashboard shows a green pulsing dot for live streams, red dot for offline/VOD.
+- `POST /api/v1/youtube/live-transcribe` starts real-time transcription of a live stream by:
+  1. Extracting the HLS manifest URL via yt-dlp.
+  2. Downloading audio chunks from the HLS stream.
+  3. Sending audio to Deepgram streaming ASR.
+  4. Broadcasting transcript tokens and alerts via WebSocket.
+- **cookies.txt support**: VoxSentinel looks for YouTube authentication cookies in priority order: `TG_COOKIES_FILE` env var → `cookies/vidcookie.txt` → `cookies/cookies.txt` → `cookies.txt` at root. Users should export YouTube cookies via the "Get cookies.txt LOCALLY" browser extension and save to `cookies/vidcookie.txt`.
+- Live transcription creates a stream with `source_type="youtube_live"` that appears in the Live Streams tab.
+- Keyword detection, sentiment analysis, and alert dispatch run in real-time on the live transcript.
+
+---
+
+### F13d: Live Microphone Transcription
+**Description:** Real-time transcription of browser microphone audio streamed via WebSocket.
+
+**User Story:** As an operator, I want to speak into my microphone and see real-time transcription with keyword alerts so I can test rules or transcribe in-person conversations.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- Dashboard provides a "Mic" panel with a record button to capture browser audio via `MediaRecorder` API.
+- Audio is streamed as binary WebM/Opus frames over `WS /ws/mic/{stream_id}`.
+- Server receives audio frames and forwards them directly to Deepgram's streaming WebSocket API.
+- Transcription tokens are broadcast back to the client in real time.
+- Keyword detection and alert dispatch run on mic transcript tokens the same as any other stream.
+- Mic streams have `source_type="mic"` and appear in the Live Streams tab while active.
 
 ---
 
@@ -399,12 +440,12 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - **Alert delivery latency** (match event → WebSocket push): <50 ms.
 - **Sentiment inference latency**: <30 ms per 3–5 s span on GPU.
 - **PII redaction latency**: <20 ms per segment.
-- **Transcript search**: <500 ms for queries across 30 days / 10 M segments.
+- ~~**Transcript search**: <500 ms for queries across 30 days / 10 M segments.~~ *(Deferred to V2.)*
 
 ### Scalability
 - **Concurrent streams**: ≥20 per GPU node (NVIDIA A10G or equivalent) in V1; ≥100 with horizontal scaling in V2.
 - **Horizontal scaling**: stateless microservices behind a load balancer; stream state held in Redis or Kafka.
-- **Storage scaling**: TimescaleDB compression and retention policies; Elasticsearch index lifecycle management.
+- **Storage scaling**: TimescaleDB compression and retention policies.
 - **ASR scaling**: multiple ASR worker pods per backend; auto-scaling based on stream count and GPU utilization.
 
 ### Security
@@ -700,7 +741,7 @@ Delete a rule.
 
 ---
 
-### Transcripts & Search
+### Transcripts
 
 #### `GET /sessions/{session_id}/transcript`
 Retrieve transcript segments for a session.
@@ -726,40 +767,7 @@ Retrieve transcript segments for a session.
 }
 ```
 
-#### `POST /search`
-Full-text search across transcripts.
-```json
-// Request
-{
-  "query": "report suspicious",
-  "search_type": "fuzzy",
-  "stream_ids": ["uuid-1", "uuid-2"],
-  "date_from": "2026-02-20T00:00:00Z",
-  "date_to": "2026-02-27T23:59:59Z",
-  "speaker_id": null,
-  "language": null,
-  "limit": 50,
-  "offset": 0
-}
-
-// Response 200
-{
-  "results": [
-    {
-      "segment_id": "uuid",
-      "session_id": "uuid",
-      "stream_id": "uuid",
-      "stream_name": "Lobby Camera 1",
-      "speaker_id": "SPEAKER_01",
-      "timestamp": "2026-02-25T14:32:10Z",
-      "text": "I want to <em>report</em> something <em>suspicious</em> near gate 3.",
-      "sentiment_label": "negative",
-      "score": 0.91
-    }
-  ],
-  "total": 1
-}
-```
+> **`POST /search` — Deferred to V2.** Full-text search via Elasticsearch has been removed from the V1 API. Transcript retrieval is available via `GET /sessions/{session_id}/transcript`.
 
 ---
 
@@ -871,7 +879,7 @@ Stream all alerts across all streams for dashboard consumption.
 | Concurrent streams per GPU node | ≥20 | Load test with 20 simultaneous RTSP streams |
 | System uptime | ≥99.5% | Monthly uptime tracking via health endpoint pings |
 | Alert delivery success rate | ≥99% | Ratio of successfully delivered alerts to total generated |
-| Transcript search response time | <500 ms (p95) | Measured under load with 10 M segments indexed |
+| ~~Transcript search response time~~ | ~~<500 ms (p95)~~ | ~~Measured under load with 10 M segments indexed~~ *(Deferred to V2)* |
 | Mean time to first transcript token | <500 ms | From stream creation API call to first WebSocket token delivery |
 
 ### Qualitative Success Criteria
@@ -891,7 +899,7 @@ Stream all alerts across all streams for dashboard consumption.
 | 3 | **High false positive rate** in keyword detection due to ASR errors | Medium | Medium | Fuzzy matching with tunable thresholds; confidence-weighted scoring; deduplication; user feedback loop to tune rules |
 | 4 | **PII leaks** if Presidio misses entities | Low | Critical | Defense in depth: Presidio + regex-based secondary pass + manual review queue for high-risk sessions; encryption at rest for all transcripts |
 | 5 | **Network latency/jitter** on RTSP streams causes audio gaps | Medium | Medium | Adaptive buffering in FFmpeg; gap detection and logging; jitter buffer tuning per stream |
-| 6 | **Elasticsearch index grows unbounded** | Medium | Medium | Index lifecycle management (ILM) with hot/warm/cold/delete phases; configurable retention policies per stream |
+| 6 | **Elasticsearch index grows unbounded** | Medium | Medium | *(Deferred to V2.)* Index lifecycle management (ILM) with hot/warm/cold/delete phases; configurable retention policies per stream |
 | 7 | **WebSocket connection drops** cause missed alerts | Medium | High | Alert state stored in Redis; clients reconnect and receive missed alerts since last acknowledged timestamp; webhook/Slack as reliable backup channels |
 | 8 | **ASR model accuracy degrades** on domain-specific vocabulary (medical, legal, financial) | Medium | Medium | Custom vocabulary injection where supported (Deepgram, Riva); post-ASR text correction pipeline (V2); regular accuracy benchmarking |
 | 9 | **Compliance requirements change** across jurisdictions | Low | Medium | Configurable compliance rule libraries per jurisdiction; regular review and update cycle; separation of compliance rules from core logic |

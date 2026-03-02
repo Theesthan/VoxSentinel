@@ -68,10 +68,10 @@
 │ SERVICE          │ │ DISPATCH     │ │                                │
 │ pyannote.audio   │ │ SERVICE      │ │ • PostgreSQL + TimescaleDB     │
 │ 3.x             │ │              │ │   (transcripts, alerts, audit) │
-│ Speaker IDs →    │ │ • WebSocket  │ │ • Elasticsearch/OpenSearch     │
-│ merge with       │ │ • Webhooks   │ │   (full-text search index)     │
-│ transcript       │ │ • Slack      │ │ • Redis (cache, state, queues) │
-│                  │ │ • Celery +   │ │                                │
+│ Speaker IDs →    │ │ • WebSocket  │ │ • ~~Elasticsearch/OpenSearch~~ │
+│ merge with       │ │ • Webhooks   │ │   ~~(full-text search)~~       │
+│ transcript       │ │ • Slack      │ │   (deferred to V2)             │
+│                  │ │ • Celery +   │ │ • Redis (cache, state, queues) │
 │                  │ │   Redis      │ │                                │
 └──────────────────┘ └──────────────┘ └────────────────────────────────┘
                            │
@@ -83,7 +83,7 @@
 │  • Live transcript view with keyword highlighting & speaker colors      │
 │  • Alert panel with severity indicators & real-time animation           │
 │  • Sentiment gauges per stream/speaker                                  │
-│  • Historical transcript search                                         │
+│  • ~~Historical transcript search~~ (deferred to V2)                    │
 │  • Stream management UI with brutalist bento grid layout                │
 │  Connected via WebSocket for real-time updates; nginx SPA proxy         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -96,7 +96,7 @@
 4. **NLP & Keyword Engine** consumes tokens, runs keyword matching + sentiment/intent + PII redaction in parallel pipelines.
 5. **Diarization Service** runs concurrently with NLP, intersecting speaker segments with ASR timestamps.
 6. **Alert Dispatch Service** receives match/sentiment/compliance events and routes them to configured channels.
-7. **Storage Service** persists redacted transcripts, alerts, audit hashes; indexes text in Elasticsearch.
+7. **Storage Service** persists redacted transcripts, alerts, audit hashes to PostgreSQL. *(Elasticsearch indexing deferred to V2.)*
 8. **Dashboard** connects via WebSocket to receive live tokens and alerts; queries REST API for historical data.
 
 ### Data Flow: Audio Capture → Alert Delivery
@@ -116,7 +116,7 @@
 10. Alert Dispatch creates alert event, sends to:
     a. WebSocket → dashboard shows red alert with highlighted "gun"
     b. Slack → #security-alerts channel receives formatted message
-11. Storage Service writes TranscriptSegment + Alert to PostgreSQL, indexes in Elasticsearch
+11. Storage Service writes TranscriptSegment + Alert to PostgreSQL
 12. Audit Service computes SHA-256 hash of segment, stores in segment_hash column
 
 Total elapsed time: ~250ms
@@ -141,7 +141,7 @@ and instead uses **Deepgram's pre-recorded REST API** (`POST https://api.deepgra
 7. Results persisted:
    - TranscriptSegmentORM rows → PostgreSQL (for transcript retrieval)
    - AlertORM rows → PostgreSQL (for Alerts tab in dashboard)
-   - Transcript segments → Elasticsearch "transcripts" index (for full-text search)
+   - ~~Transcript segments → Elasticsearch "transcripts" index~~ (deferred to V2)
    - In-process job dict (job_id → transcript, alerts, summary) for polling
 8. Dashboard polls GET /api/v1/file-analyze/{job_id} until status="completed"
 ```
@@ -154,6 +154,46 @@ YouTube URLs are also supported via `POST /api/v1/youtube/download-analyze`:
 2. Audio track downloaded as WAV via yt-dlp + FFmpeg
 3. Downloaded file enters the same file analyze pipeline (steps 3-8 above)
 ```
+
+#### YouTube Live Transcription
+
+YouTube **live** streams are supported via `POST /api/v1/youtube/live-transcribe`:
+```
+1. Frontend calls POST /api/v1/youtube/resolve — detects if stream is live
+2. If live, POST /api/v1/youtube/live-transcribe creates stream + background task
+3. Background task captures 10s audio chunks via FFmpeg from HLS URL
+4. Each chunk sent to Deepgram pre-recorded API for transcription
+5. Results published to Redis channel "redacted_tokens:{stream_id}"
+6. Dashboard WebSocket receives tokens in real time
+```
+
+**Note:** YouTube requires browser cookies in Netscape format for HLS URL
+extraction. VoxSentinel looks in this order:
+1. `TG_COOKIES_FILE` env var (absolute path)
+2. `cookies/vidcookie.txt` — YouTube-specific cookies (**recommended**; tested working)
+3. `cookies/cookies.txt` — general browser cookie export
+4. `cookies.txt` at the VoxSentinel root (legacy fallback)
+
+Without cookies, liveness detection works via HTTP scraping but live audio capture
+will fail (no HLS URL returned by yt-dlp).
+
+**Test result (2026-03-03):** Full pipeline verified with `cookies/vidcookie.txt`:
+- `POST /youtube/resolve` returns `is_live: true` with valid HLS manifest URL
+- `POST /youtube/live-transcribe` starts background task (`stream_id` returned)
+- FFmpeg captures ~320 KB WAV chunks every 10s from the HLS stream
+- Transcription task stops cleanly via `POST /youtube/stop-live/{stream_id}`
+
+#### Microphone Live Transcription
+
+The `/ws/mic` WebSocket endpoint connects the browser microphone directly to
+Deepgram's streaming API (`wss://api.deepgram.com/v1/listen`). The browser sends
+raw PCM audio (16kHz, 16-bit, mono) and receives JSON transcript results back.
+
+#### Search Feature (Removed)
+
+The search tab and Elasticsearch transcript search have been removed from the
+dashboard UI. The search router is no longer registered in the API gateway.
+Elasticsearch remains available for future indexing use.
 
 ### Native Local Development Setup
 
