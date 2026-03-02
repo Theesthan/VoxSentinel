@@ -83,11 +83,20 @@ async def _diarize_loop(
             for _stream, messages in entries:
                 for msg_id, fields in messages:
                     last_id = msg_id
-                    chunk = fields.get("data", b"")
-                    if isinstance(chunk, str):
-                        # Redis decode_responses may have mangled bytes;
-                        # prefer binary transport in production.
-                        chunk = chunk.encode("latin-1")
+                    # VAD forwards original fields from ingestion
+                    # which use "pcm_b64" (base64 encoded).
+                    import base64 as _b64
+                    pcm_b64 = fields.get("pcm_b64", "")
+                    if pcm_b64:
+                        try:
+                            chunk = _b64.b64decode(pcm_b64)
+                        except Exception:
+                            chunk = b""
+                    else:
+                        # Fallback: try legacy "data" field
+                        chunk = fields.get("data", b"")
+                        if isinstance(chunk, str):
+                            chunk = chunk.encode("latin-1")
                     buffer.extend(chunk)
 
             if len(buffer) >= ACCUMULATE_BYTES:
@@ -181,7 +190,7 @@ async def _enrich_loop(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Load the diarization model, connect Redis, then clean up."""
+    """Load the diarization model, connect Redis, discover active streams."""
     global _pipeline, _redis
 
     logger.info("diarization_service_starting")
@@ -194,10 +203,65 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     health.configure(_pipeline)
 
-    logger.info("diarization_service_ready")
+    # ── Discover active streams and spawn processing tasks ──
+    _tasks: list[asyncio.Task] = []
+    try:
+        # Query API or Redis for active streams
+        raw_streams = await _redis.redis.smembers("active_streams") or set()
+        for stream_raw in raw_streams:
+            import json as _json
+            try:
+                stream_info = _json.loads(stream_raw) if isinstance(stream_raw, str) else stream_raw
+                stream_id = stream_info.get("stream_id", stream_raw) if isinstance(stream_info, dict) else stream_raw
+                session_id = stream_info.get("session_id", "") if isinstance(stream_info, dict) else ""
+                logger.info("diarization_spawning_stream", stream_id=stream_id)
+                t1 = asyncio.create_task(_diarize_loop(str(stream_id), _redis, _pipeline))
+                t2 = asyncio.create_task(_enrich_loop(str(stream_id), str(session_id), _redis))
+                _tasks.extend([t1, t2])
+            except Exception:
+                logger.exception("diarization_stream_spawn_failed", raw=stream_raw)
+    except Exception:
+        logger.warning("diarization_no_active_streams_found")
+
+    # Also listen for new stream_started events to spawn dynamically
+    async def _stream_watcher() -> None:
+        """Watch for new stream_started events and spawn diarization loops."""
+        import json as _json
+        pubsub = _redis.redis.pubsub()
+        await pubsub.subscribe("stream_started")
+        try:
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                try:
+                    data = _json.loads(message["data"])
+                    sid = data.get("stream_id", "")
+                    sess_id = data.get("session_id", "")
+                    logger.info("diarization_new_stream_detected", stream_id=sid)
+                    t1 = asyncio.create_task(_diarize_loop(sid, _redis, _pipeline))
+                    t2 = asyncio.create_task(_enrich_loop(sid, sess_id, _redis))
+                    _tasks.extend([t1, t2])
+                except Exception:
+                    logger.exception("diarization_watcher_parse_error")
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await pubsub.unsubscribe("stream_started")
+            await pubsub.close()
+
+    watcher_task = asyncio.create_task(_stream_watcher())
+    _tasks.append(watcher_task)
+
+    logger.info("diarization_service_ready", active_streams=len(raw_streams) if 'raw_streams' in dir() else 0)
     yield
 
     logger.info("diarization_service_stopping")
+    for t in _tasks:
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
     if _redis:
         await _redis.close()
     logger.info("diarization_service_stopped")

@@ -12,7 +12,7 @@ import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.dependencies import get_db_session, get_redis
 from api.schemas.stream_schemas import (
@@ -70,7 +70,13 @@ async def create_stream(
     if redis is not None:
         await redis.publish(
             "stream_started",
-            json.dumps({"stream_id": str(stream_id), "session_id": str(session_id)}),
+            json.dumps({
+                "stream_id": str(stream_id),
+                "session_id": str(session_id),
+                "source_url": body.source_url,
+                "source_type": body.source_type,
+                "name": body.name,
+            }),
         )
 
     return StreamCreateResponse(
@@ -82,13 +88,20 @@ async def create_stream(
 
 
 @router.get("", response_model=StreamListResponse)
-async def list_streams(db: Any = Depends(get_db_session)) -> StreamListResponse:
+async def list_streams(
+    exclude_source_type: str | None = Query(default=None),
+    db: Any = Depends(get_db_session),
+) -> StreamListResponse:
     if db is None:
         return StreamListResponse(streams=[], total=0)
 
     from sqlalchemy import select
 
-    result = await db.execute(select(StreamORM))
+    stmt = select(StreamORM)
+    if exclude_source_type:
+        stmt = stmt.where(StreamORM.source_type != exclude_source_type)
+
+    result = await db.execute(stmt)
     rows = result.scalars().all()
     streams = [
         StreamSummary(
@@ -96,6 +109,7 @@ async def list_streams(db: Any = Depends(get_db_session)) -> StreamListResponse:
             name=s.name,
             status=s.status,
             source_type=s.source_type,
+            source_url=s.source_url,
             asr_backend=s.asr_backend,
             session_id=s.session_id,
             created_at=s.created_at,

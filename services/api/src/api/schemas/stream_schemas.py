@@ -40,6 +40,7 @@ class StreamSummary(BaseModel):
     name: str
     status: str
     source_type: str
+    source_url: str | None = None
     asr_backend: str
     session_id: UUID | None
     created_at: datetime

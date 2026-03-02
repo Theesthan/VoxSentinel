@@ -1,56 +1,84 @@
-import { motion } from "framer-motion";
+import { motion, useInView } from "framer-motion";
+import { useRef } from "react";
 import { Link } from "react-router-dom";
 
 export default function Footer() {
+  const ctaRef = useRef<HTMLDivElement>(null);
+  const ctaInView = useInView(ctaRef, { once: true, margin: "-10%" });
+
   return (
-    <footer className="border-t border-white/[0.06] px-8 md:px-16 lg:px-24 py-20">
-      <div className="max-w-[90rem] mx-auto">
-        {/* CTA Banner */}
-        <motion.div
-          className="border border-white/10 p-12 md:p-20 text-center mb-20"
-          initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.8, ease: [0.76, 0, 0.24, 1] }}
-        >
-          <h2 className="text-3xl md:text-5xl font-bold tracking-[-0.03em]">
-            Ready to listen.
-          </h2>
-          <p className="mt-4 text-sm text-white/30 max-w-md mx-auto">
-            Deploy the full pipeline in minutes. Monitor, detect, alert — in
-            real time.
-          </p>
-          <Link
-            to="/dashboard"
-            className="inline-flex items-center gap-3 border border-white/20 px-10 py-5 mt-10 text-xs tracking-[0.2em] uppercase hover:bg-white hover:text-black transition-all duration-500"
+    <footer className="border-t border-white/[0.06]">
+      {/* ── CTA Banner ── */}
+      <div ref={ctaRef} className="py-32 md:py-44">
+        <div className="max-w-7xl mx-auto px-8 md:px-16 text-center">
+          <motion.h2
+            className="text-[clamp(2.4rem,5.5vw,5rem)] font-medium tracking-[-0.03em] leading-[1.05] mb-8"
+            initial={{ opacity: 0, y: 40 }}
+            animate={ctaInView ? { opacity: 1, y: 0 } : {}}
+            transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
           >
-            Enter Dashboard →
-          </Link>
-        </motion.div>
+            Ready to listen.
+          </motion.h2>
 
-        {/* Bottom bar */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-8">
-          <div>
-            <p className="text-sm font-semibold tracking-tight">VoxSentinel</p>
-            <p className="mt-1 text-[10px] text-white/20 tracking-wider">
-              Real-Time Intelligence Platform
-            </p>
-          </div>
+          <motion.p
+            className="text-[15px] text-white/30 mb-12 max-w-md mx-auto leading-relaxed"
+            initial={{ opacity: 0 }}
+            animate={ctaInView ? { opacity: 1 } : {}}
+            transition={{ duration: 0.6, delay: 0.3 }}
+          >
+            Enter the dashboard, connect a stream, and hear what your systems
+            have been missing.
+          </motion.p>
 
-          <div className="flex items-center gap-8 text-[10px] text-white/20 tracking-wider uppercase">
-            <a
-              href="https://github.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-white/50 transition-colors"
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={ctaInView ? { opacity: 1, y: 0 } : {}}
+            transition={{ duration: 0.6, delay: 0.5 }}
+          >
+            <Link
+              to="/login"
+              className="group relative inline-flex items-center gap-3 px-10 py-4 border border-white/20 text-[12px] font-mono tracking-[0.2em] uppercase overflow-hidden transition-colors duration-500 hover:text-black"
             >
-              GitHub
-            </a>
-            <a href="/docs" className="hover:text-white/50 transition-colors">
-              API Docs
-            </a>
-            <span>© 2026</span>
+              {/* Sliding fill */}
+              <span className="absolute inset-0 bg-white translate-x-[-101%] group-hover:translate-x-0 transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]" />
+              <span className="relative z-10">Enter Dashboard</span>
+              <span className="relative z-10 text-white/40 group-hover:text-black/40 transition-colors duration-500">
+                →
+              </span>
+            </Link>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* ── Bottom bar ── */}
+      <div className="border-t border-white/[0.04] py-8">
+        <div className="max-w-7xl mx-auto px-8 md:px-16 flex flex-col md:flex-row items-center justify-between gap-4">
+          {/* Left — Brand */}
+          <span className="text-[10px] font-mono tracking-[0.3em] text-white/20 uppercase">
+            VoxSentinel
+          </span>
+
+          {/* Center links */}
+          <div className="flex items-center gap-8">
+            {[
+              { label: "GitHub", href: "#" },
+              { label: "API Docs", href: "#" },
+              { label: "Architecture", href: "#" },
+            ].map((link) => (
+              <a
+                key={link.label}
+                href={link.href}
+                className="text-[10px] font-mono tracking-[0.15em] text-white/15 hover:text-white/40 transition-colors duration-300 uppercase"
+              >
+                {link.label}
+              </a>
+            ))}
           </div>
+
+          {/* Right — Copyright */}
+          <span className="text-[10px] font-mono tracking-[0.15em] text-white/10">
+            © {new Date().getFullYear()} VoxSentinel
+          </span>
         </div>
       </div>
     </footer>

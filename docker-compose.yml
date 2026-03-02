@@ -188,6 +188,7 @@ services:
       - "8004:8004"
     environment:
       <<: *common-env
+      TG_NLP_INPUT_STREAM: transcript_tokens
     env_file: .env
     networks:
       - voxnet

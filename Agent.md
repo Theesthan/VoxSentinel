@@ -1,8 +1,8 @@
 # Architecture & Agent Guide (AGENTS.md)
-## TranscriptGuard — Real-Time Multi-Source Transcription, Analytics & Alerting Platform
+## VoxSentinel — Real-Time Multi-Source Transcription, Analytics & Alerting Platform
 
-**Version:** 1.0
-**Date:** 2026-02-27
+**Version:** 1.1
+**Date:** 2025-07-03
 **For:** AI Coding Agents (Copilot, Cursor, Claude) and Human Developers
 
 ---
@@ -122,12 +122,59 @@
 Total elapsed time: ~250ms
 ```
 
+### File Analyze Pipeline (Batch / Pre-Recorded)
+
+For uploaded audio files, VoxSentinel bypasses the streaming pipeline (VAD → ASR WebSocket → NLP)
+and instead uses **Deepgram's pre-recorded REST API** (`POST https://api.deepgram.com/v1/listen`):
+
+```
+1. User uploads audio file via POST /api/v1/file-analyze (multipart form)
+2. API saves file to temp dir, creates Stream (source_type="file") + Session in DB
+3. Background task sends raw audio bytes to Deepgram pre-recorded API with:
+   - model=nova-2, diarize=true, utterances=true, smart_format=true, punctuate=true
+4. Deepgram returns full JSON with utterances (speaker-labeled segments)
+5. API parses utterances → FileAnalyzeSegment objects (speaker_id, timestamps, confidence)
+6. Results stored in in-process job dict (job_id → transcript, alerts, summary)
+7. Dashboard polls GET /api/v1/file-analyze/{job_id} until status="completed"
+```
+
+This approach is significantly more reliable for batch files than the streaming pipeline,
+avoiding VAD chunk-size issues and WebSocket timeouts.
+
+### Native Local Development Setup
+
+VoxSentinel can run entirely natively on Windows without Docker:
+
+| Component | Version | Location / Notes |
+|-----------|---------|------------------|
+| Python | 3.11.9 | venv at `.venv/` |
+| PostgreSQL | 18 | `localhost:5432`, user `voxsentinel`, db `voxsentinel`, pg_hba.conf set to `trust` |
+| Redis | 5.0.14.1 | tporadowski build at `redis5/`, port 6379 |
+| Elasticsearch | 9.3.1 | At `elasticsearch/`, single-node, security off, 512MB heap, port 9200 |
+| Node.js | 20.x | Dashboard via Vite dev server |
+
+#### Service Ports (Native)
+
+| Service | Port | Notes |
+|---------|------|-------|
+| API Gateway | 8010 | Port 8000 may have ghost sockets from killed processes |
+| Storage | 8001 | |
+| VAD | 8002 | |
+| ASR | 8003 | |
+| NLP | 8004 | |
+| Alerts | 8006 | |
+| Ingestion | 8007 | |
+| Dashboard | 5173 | Vite dev server, proxies `/api` → `http://localhost:8010` |
+| PostgreSQL | 5432 | |
+| Redis | 6379 | |
+| Elasticsearch | 9200 | |
+
 ---
 
 ## 2. Directory Structure
 
 ```
-transcriptguard/
+voxsentinel/
 ├── README.md                          # Project overview, quick start guide
 ├── PRD.md                             # Product Requirements Document
 ├── AGENTS.md                          # This file: architecture & coding guide
@@ -682,18 +729,18 @@ transcriptguard/
 
 ### Error Handling Strategy
 
-1. **Define service-specific exception hierarchies** inheriting from a base `TranscriptGuardError`:
+1. **Define service-specific exception hierarchies** inheriting from a base `VoxSentinelError`:
    ```python
-   class TranscriptGuardError(Exception):
-       """Base exception for all TranscriptGuard errors."""
+   class VoxSentinelError(Exception):
+       """Base exception for all VoxSentinel errors."""
 
-   class ASRConnectionError(TranscriptGuardError):
+   class ASRConnectionError(VoxSentinelError):
        """Failed to connect to ASR backend."""
 
-   class ASRTimeoutError(TranscriptGuardError):
+   class ASRTimeoutError(VoxSentinelError):
        """ASR backend did not respond within timeout."""
 
-   class InvalidRuleError(TranscriptGuardError):
+   class InvalidRuleError(VoxSentinelError):
        """Keyword rule configuration is invalid."""
    ```
 

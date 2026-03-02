@@ -22,12 +22,14 @@ from api.routers import (
     alert_channels,
     alerts,
     audit,
+    file_analyze,
     health,
     rules,
     search,
     streams,
     transcripts,
     ws,
+    youtube,
 )
 
 
@@ -50,7 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         db_url = os.getenv(
             "TG_DB_URI",
-            os.getenv("DATABASE_URL", "postgresql+asyncpg://vox:vox@localhost:5432/voxsentinel"),
+            os.getenv("DATABASE_URL", "postgresql+asyncpg://voxsentinel:changeme@localhost:5432/voxsentinel"),
         )
         engine = create_async_engine(db_url, echo=False)
         app.state.db_session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -108,6 +110,8 @@ def create_app() -> FastAPI:
     app.include_router(search.router, prefix=api_prefix)
     app.include_router(transcripts.router, prefix=api_prefix)
     app.include_router(audit.router, prefix=api_prefix)
+    app.include_router(file_analyze.router, prefix=api_prefix)
+    app.include_router(youtube.router, prefix=api_prefix)
 
     # Health + WS are mounted at root (no /api/v1 prefix).
     app.include_router(health.router)

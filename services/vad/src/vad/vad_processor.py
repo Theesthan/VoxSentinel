@@ -128,7 +128,7 @@ class VADProcessor:
             return
 
         pcm_bytes = base64.b64decode(pcm_b64)
-        score = await self._model.classify(pcm_bytes)
+        score = await self._model.classify(pcm_bytes, stream_id=stream_id)
 
         # Update window counters.
         self._window_total[stream_id] = self._window_total.get(stream_id, 0) + 1

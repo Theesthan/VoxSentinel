@@ -11,6 +11,7 @@ dependencies = [
     "tg-common",
     "pyannote.audio>=3.3",
     "speechbrain>=1.0",
+    "torchaudio>=2.3",
     "torch>=2.3",
     "numpy>=1.26",
     "structlog>=24.2",

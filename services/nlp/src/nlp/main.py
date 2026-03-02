@@ -60,6 +60,7 @@ _sentiment_engine: SentimentEngine | None = None
 _pii_redactor: PiiRedactor | None = None
 _rule_loader: RuleLoader | None = None
 _redis: RedisClient | None = None
+_tasks: list[asyncio.Task] = []
 
 
 async def _process_token(
@@ -126,19 +127,31 @@ async def _process_token(
             escalation_event.model_dump(mode="json"),
         )
 
-    # Publish redacted text for downstream storage
-    await redis.xadd(
-        f"redacted_tokens:{stream_id}",
-        {
-            "text_original": token.text,
-            "text_redacted": pii_result.redacted_text,
-            "entities_found": json.dumps(pii_result.entities_found),
-            "sentiment_label": sentiment_result.label.lower(),
-            "sentiment_score": str(sentiment_result.score),
-            "start_time": token.start_time.isoformat(),
-            "end_time": token.end_time.isoformat(),
-        },
-    )
+    # Build redacted token payload
+    redacted_payload = {
+        "text_original": token.text,
+        "text_redacted": pii_result.redacted_text,
+        "entities_found": json.dumps(pii_result.entities_found),
+        "sentiment_label": sentiment_result.label.lower(),
+        "sentiment_score": str(sentiment_result.score),
+        "start_time": token.start_time.isoformat(),
+        "end_time": token.end_time.isoformat(),
+    }
+
+    # Publish redacted text for downstream storage (Redis stream)
+    await redis.xadd(f"redacted_tokens:{stream_id}", redacted_payload)
+
+    # Also publish to pub/sub for real-time WebSocket delivery
+    ws_payload = json.dumps({
+        "text": pii_result.redacted_text,
+        "speaker_id": getattr(token, "speaker_id", None),
+        "sentiment_label": sentiment_result.label.lower(),
+        "sentiment_score": round(sentiment_result.score, 4),
+        "start_time": token.start_time.isoformat(),
+        "end_time": token.end_time.isoformat(),
+        "is_final": True,
+    })
+    await redis.publish(f"redacted_tokens:{stream_id}", ws_payload)
 
 
 async def _consume_stream(
@@ -188,6 +201,49 @@ async def _consume_stream(
             await asyncio.sleep(1.0)
 
 
+def _start_consumer(stream_id: str, session_id: str = "") -> None:
+    """Spawn a ``_consume_stream`` task for *stream_id*."""
+    if _redis is None or _keyword_engine is None or _sentiment_engine is None or _pii_redactor is None:
+        return
+    stream_key = f"{NLP_INPUT_STREAM_PREFIX}:{stream_id}"
+    task = asyncio.create_task(
+        _consume_stream(
+            stream_key, stream_id, session_id,
+            _redis, _keyword_engine, _sentiment_engine, _pii_redactor,
+        ),
+        name=f"nlp-{stream_id}",
+    )
+    _tasks.append(task)
+    logger.info("nlp_consumer_spawned", stream_id=stream_id, stream_key=stream_key)
+
+
+async def _stream_watcher() -> None:
+    """Subscribe to ``stream_started`` and spawn NLP consumers for new streams."""
+    if _redis is None:
+        return
+    pubsub = _redis.redis.pubsub()
+    await pubsub.subscribe("stream_started")
+    logger.info("nlp_stream_watcher_started")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            try:
+                data = json.loads(message["data"])
+                sid = data.get("stream_id", "")
+                sess_id = data.get("session_id", "")
+                if sid:
+                    logger.info("nlp_new_stream_detected", stream_id=sid)
+                    _start_consumer(sid, sess_id)
+            except Exception:
+                logger.exception("nlp_stream_watcher_error")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe("stream_started")
+        await pubsub.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan: initialise engines and Redis, then clean up."""
@@ -215,11 +271,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Configure health endpoint
     health.configure(_keyword_engine, _sentiment_engine, _pii_redactor)
 
+    # Load existing active streams and start consumers
+    try:
+        raw_streams = await _redis.redis.smembers("active_streams") or set()
+        for stream_raw in raw_streams:
+            try:
+                stream_info = json.loads(stream_raw) if isinstance(stream_raw, str) else stream_raw
+                sid = stream_info.get("stream_id", stream_raw) if isinstance(stream_info, dict) else str(stream_raw)
+                sess_id = stream_info.get("session_id", "") if isinstance(stream_info, dict) else ""
+                _start_consumer(str(sid), str(sess_id))
+            except Exception:
+                logger.exception("nlp_stream_spawn_failed", raw=stream_raw)
+    except Exception:
+        logger.warning("nlp_no_active_streams_found")
+
+    # Watch for new streams
+    watcher_task = asyncio.create_task(_stream_watcher(), name="nlp-stream-watcher")
+    _tasks.append(watcher_task)
+
     logger.info("nlp_service_ready")
     yield
 
     # Shutdown
     logger.info("nlp_service_stopping")
+    for t in _tasks:
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    _tasks.clear()
     if _rule_loader:
         await _rule_loader.stop()
     if _redis:

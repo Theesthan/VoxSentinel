@@ -12,6 +12,7 @@ Starts a FastAPI application that:
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -66,10 +67,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Fetch active streams and spawn processors.
     await _load_active_streams(settings.api_host, settings.api_port)
 
+    # Watch for new streams via Redis pub/sub.
+    watcher_task = asyncio.create_task(_stream_watcher(), name="vad-stream-watcher")
+
     yield
 
     # ── shutdown ──
     logger.info("vad_shutdown")
+    watcher_task.cancel()
+    try:
+        await watcher_task
+    except asyncio.CancelledError:
+        pass
     for sid, evt in _stop_events.items():
         evt.set()
     for task in _tasks.values():
@@ -96,19 +105,49 @@ def create_app() -> FastAPI:
 async def _load_active_streams(api_host: str, api_port: int) -> None:
     """Fetch active streams from the API gateway and start VAD processors."""
     url = f"http://{api_host}:{api_port}/api/v1/streams"
+    settings = get_settings()
+    headers = {"Authorization": f"Bearer {settings.api_key}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, params={"status": StreamStatus.ACTIVE.value})
+            resp = await client.get(url, params={"status": StreamStatus.ACTIVE.value}, headers=headers)
             resp.raise_for_status()
 
-        streams_data: list[dict[str, Any]] = resp.json()
+        body = resp.json()
+        streams_data: list[dict[str, Any]] = body.get("streams", body) if isinstance(body, dict) else body
         for item in streams_data:
             sid = str(item.get("stream_id", ""))
-            if sid:
+            source_type = str(item.get("source_type", ""))
+            if sid and source_type != "file":
                 _start_processor(sid)
         logger.info("vad_active_streams_loaded", count=len(streams_data))
     except Exception:
         logger.warning("vad_active_streams_load_failed", url=url, exc_info=True)
+
+
+async def _stream_watcher() -> None:
+    """Subscribe to ``stream_started`` and spawn VAD processors for new streams."""
+    if _redis_client is None:
+        return
+    pubsub = _redis_client.redis.pubsub()
+    await pubsub.subscribe("stream_started")
+    logger.info("vad_stream_watcher_started")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            try:
+                data = json.loads(message["data"])
+                sid = data.get("stream_id", "")
+                if sid:
+                    logger.info("vad_new_stream_detected", stream_id=sid)
+                    _start_processor(sid)
+            except Exception:
+                logger.exception("vad_stream_watcher_error")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe("stream_started")
+        await pubsub.close()
 
 
 def _start_processor(stream_id: str) -> None:
@@ -123,8 +162,18 @@ def _start_processor(stream_id: str) -> None:
         vad_model=get_vad_model(),
         redis_client=_redis_client,
     )
+
+    async def _run_with_guard() -> None:
+        """Run the processor with top-level exception handling."""
+        try:
+            await processor.process_stream(stream_id, stop_event=stop_event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("vad_processor_crashed", stream_id=stream_id)
+
     task = asyncio.create_task(
-        processor.process_stream(stream_id, stop_event=stop_event),
+        _run_with_guard(),
         name=f"vad-{stream_id}",
     )
     _tasks[stream_id] = task

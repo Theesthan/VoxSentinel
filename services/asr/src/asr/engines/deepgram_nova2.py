@@ -118,7 +118,13 @@ class DeepgramNova2Engine(ASREngine):  # type: ignore[misc]
         and drained from the internal queue on each call.
         """
         if not self._connected or self._connection is None:
-            raise RuntimeError("Deepgram engine is not connected")
+            # Attempt auto-reconnect once before raising.
+            logger.warning("deepgram_auto_reconnect")
+            try:
+                await self.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            await self.connect()
 
         await self._connection.send(chunk)
 
@@ -185,7 +191,7 @@ class DeepgramNova2Engine(ASREngine):  # type: ignore[misc]
         logger.error("deepgram_error", error=str(error))
         self._connected = False
 
-    async def _on_close(self, _connection: Any, close_msg: Any, **_kw: Any) -> None:
+    async def _on_close(self, _connection: Any = None, close_msg: Any = None, **_kw: Any) -> None:
         """Handle Deepgram WebSocket close."""
         logger.warning("deepgram_connection_closed", close_msg=str(close_msg))
         self._connected = False

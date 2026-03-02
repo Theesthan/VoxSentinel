@@ -9,6 +9,7 @@ and metrics endpoints.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -112,10 +113,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await _load_active_streams(settings.api_host, settings.api_port)
 
+    # Watch for new streams via Redis pub/sub.
+    watcher_task = asyncio.create_task(_stream_watcher(), name="asr-stream-watcher")
+
     yield
 
     # ── shutdown ──
     logger.info("asr_shutdown")
+    watcher_task.cancel()
+    try:
+        await watcher_task
+    except asyncio.CancelledError:
+        pass
     for evt in _stop_events.values():
         evt.set()
     for task in _tasks.values():
@@ -147,19 +156,49 @@ def create_app() -> FastAPI:
 async def _load_active_streams(api_host: str, api_port: int) -> None:
     """Fetch active streams from the API gateway and start ASR routers."""
     url = f"http://{api_host}:{api_port}/api/v1/streams"
+    settings = get_settings()
+    headers = {"Authorization": f"Bearer {settings.api_key}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, params={"status": StreamStatus.ACTIVE.value})
+            resp = await client.get(url, params={"status": StreamStatus.ACTIVE.value}, headers=headers)
             resp.raise_for_status()
 
-        streams_data: list[dict[str, Any]] = resp.json()
+        body = resp.json()
+        streams_data: list[dict[str, Any]] = body.get("streams", body) if isinstance(body, dict) else body
         for item in streams_data:
             sid = str(item.get("stream_id", ""))
-            if sid:
+            source_type = str(item.get("source_type", ""))
+            if sid and source_type != "file":
                 _start_router(sid)
         logger.info("asr_active_streams_loaded", count=len(streams_data))
     except Exception:
         logger.warning("asr_active_streams_load_failed", url=url, exc_info=True)
+
+
+async def _stream_watcher() -> None:
+    """Subscribe to ``stream_started`` and spawn ASR routers for new streams."""
+    if _redis_client is None:
+        return
+    pubsub = _redis_client.redis.pubsub()
+    await pubsub.subscribe("stream_started")
+    logger.info("asr_stream_watcher_started")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            try:
+                data = json.loads(message["data"])
+                sid = data.get("stream_id", "")
+                if sid:
+                    logger.info("asr_new_stream_detected", stream_id=sid)
+                    _start_router(sid)
+            except Exception:
+                logger.exception("asr_stream_watcher_error")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe("stream_started")
+        await pubsub.close()
 
 
 def _start_router(stream_id: str) -> None:

@@ -11,6 +11,8 @@ Starts a FastAPI application that:
 
 from __future__ import annotations
 
+import asyncio
+import json
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from typing import Any
@@ -63,10 +65,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Fetch active streams from the API gateway and start them.
     await _load_active_streams(_stream_manager, settings.api_host, settings.api_port)
 
+    # Watch for new streams via Redis pub/sub.
+    watcher_task = asyncio.create_task(
+        _stream_watcher(_stream_manager), name="ingestion-stream-watcher"
+    )
+
     yield
 
     # ── shutdown ──
     logger.info("ingestion_shutdown")
+    watcher_task.cancel()
+    try:
+        await watcher_task
+    except asyncio.CancelledError:
+        pass
     await _stream_manager.stop_all()
     await _redis_client.close()
 
@@ -83,6 +95,48 @@ def create_app() -> FastAPI:
     return app
 
 
+async def _stream_watcher(manager: StreamManager) -> None:
+    """Subscribe to ``stream_started`` and start ingestion for new live streams.
+
+    Ignores file-type streams since file_analyze pushes chunks directly.
+    """
+    if _redis_client is None:
+        return
+    pubsub = _redis_client.redis.pubsub()
+    await pubsub.subscribe("stream_started")
+    logger.info("ingestion_stream_watcher_started")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            try:
+                data = json.loads(message["data"])
+                source_type = data.get("source_type", "")
+                if source_type == "file":
+                    # File analysis pushes chunks via the API; skip ingestion.
+                    continue
+                sid = data.get("stream_id", "")
+                source_url = data.get("source_url", "")
+                if sid and source_url:
+                    logger.info("ingestion_new_stream_detected", stream_id=sid)
+                    stream = Stream(
+                        stream_id=sid,
+                        name=f"live-{sid[:8]}",
+                        source_type=source_type or "rtsp",
+                        source_url=source_url,
+                        status="active",
+                        session_id=data.get("session_id", ""),
+                    )
+                    await manager.start_stream(stream)
+            except Exception:
+                logger.exception("ingestion_stream_watcher_error")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe("stream_started")
+        await pubsub.close()
+
+
 async def _load_active_streams(
     manager: StreamManager,
     api_host: str,
@@ -96,14 +150,23 @@ async def _load_active_streams(
         api_port: API gateway port.
     """
     url = f"http://{api_host}:{api_port}/api/v1/streams"
+    settings = get_settings()
+    headers = {"Authorization": f"Bearer {settings.api_key}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, params={"status": StreamStatus.ACTIVE.value})
+            resp = await client.get(url, params={"status": StreamStatus.ACTIVE.value}, headers=headers)
             resp.raise_for_status()
 
-        streams_data: list[dict[str, Any]] = resp.json()
+        body = resp.json()
+        streams_data: list[dict[str, Any]] = body.get("streams", body) if isinstance(body, dict) else body
         for item in streams_data:
-            stream = Stream(**item)
+            if item.get("source_type") == "file":
+                continue
+            try:
+                stream = Stream(**item)
+            except Exception:
+                logger.warning("active_stream_parse_error", item=item, exc_info=True)
+                continue
             await manager.start_stream(stream)
         logger.info("active_streams_loaded", count=len(streams_data))
     except Exception:

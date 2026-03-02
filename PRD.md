@@ -1,10 +1,10 @@
 # Product Requirements Document (PRD)
 ## Real-Time Multi-Source Transcription, Analytics, and Alerting Platform
 
-**Version:** 1.0
-**Date:** 2026-02-27
+**Version:** 1.1
+**Date:** 2025-07-03
 **Author:** Theesthan
-**Status:** Draft
+**Status:** Active
 
 ---
 
@@ -14,10 +14,10 @@
 **VoxSentinel** — Real-Time Multi-Source Transcription, Analytics & Alerting Platform
 
 ### One-Liner
-A low-latency, pluggable platform that ingests live audio/video streams from CCTV, contact centers, classrooms, and meetings, transcribes speech in real time, monitors for configurable keywords/intents/sentiment, and dispatches multi-channel alerts and agent-assist signals within 300 ms end-to-end.
+A low-latency, pluggable platform that ingests live audio/video streams from CCTV, contact centers, classrooms, meetings, and **government/legislative sessions**, transcribes speech in real time, monitors for configurable keywords/intents/sentiment (including legislative tracking keywords), and dispatches multi-channel alerts and agent-assist signals within 300 ms end-to-end.
 
 ### Purpose
-Organizations operating surveillance systems, contact centers, educational institutions, and corporate meeting environments need continuous, automated monitoring of spoken content. Manual monitoring is expensive, error-prone, and does not scale. This platform automates speech-to-text conversion, keyword/intent detection, sentiment analysis, compliance checking, PII redaction, and alerting — all in real time across dozens of concurrent streams.
+Organizations operating surveillance systems, contact centers, educational institutions, corporate meeting environments, and **government/legislative monitoring agencies** need continuous, automated monitoring of spoken content. Manual monitoring is expensive, error-prone, and does not scale. This platform automates speech-to-text conversion, keyword/intent detection, sentiment analysis, compliance checking, PII redaction, and alerting — all in real time across dozens of concurrent streams.
 
 ### Problem Being Solved
 - **Latency**: Existing batch-transcription tools (30–60 s chunk-based) introduce unacceptable delays for safety-critical or compliance-critical alerting.
@@ -332,6 +332,43 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - Every 60 seconds, a Merkle root is computed from all new segment hashes since the last anchor and written to an append-only `audit_anchors` table.
 - An audit verification endpoint accepts a `segment_id` and returns the segment's hash, its Merkle proof, and the anchor record.
 - The `audit_anchors` table is append-only (no UPDATE/DELETE permissions granted to application roles).
+
+---
+
+### F13: File Analyze (Batch Transcription)
+**Description:** Upload audio files for asynchronous transcription and analysis using Deepgram's pre-recorded REST API, bypassing the streaming pipeline for reliability.
+
+**User Story:** As an analyst, I want to upload recorded audio files and get a full transcript with speaker diarization and keyword highlighting so that I can review past recordings.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- `POST /api/v1/file-analyze` accepts multipart audio file upload (WAV, MP3, M4A, MP4, OGG, FLAC, WebM, AAC).
+- Audio is sent directly to Deepgram pre-recorded API (`POST https://api.deepgram.com/v1/listen`) with nova-2 model, diarization, utterances, and smart formatting enabled.
+- Job status is trackable via `GET /api/v1/file-analyze/{job_id}` with polling.
+- Results include: transcript segments with speaker IDs, timestamps, confidence scores, and a summary (total segments, speakers detected, languages).
+- File analyze streams have `source_type="file"` and are excluded from the Live Streams tab in the dashboard.
+- Dashboard File Analyze tab provides drag-and-drop upload, job list, and detail view with transcript/alerts/summary sub-tabs.
+
+---
+
+### F14: Legislative Tracking Keyword Rules
+**Description:** Pre-configured keyword rule sets for monitoring government and legislative audio streams, enabling real-time alerting when new laws, bills, regulatory changes, committee actions, or voting procedures are discussed.
+
+**User Story:** As a legislative monitor, I want keyword rule sets that automatically detect when bills, acts, amendments, committee hearings, or votes are being discussed in government audio streams so I can react immediately.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- Five English-language rule sets are available via `scripts/seed_legislation_rules.py`:
+  1. `legislation_initiatives` — Bills, acts, amendments, resolutions, executive orders
+  2. `legislation_committees` — Committee hearings, subcommittees, testimonies, markup sessions
+  3. `legislation_voting` — Roll call votes, quorum, ayes/nays, veto, override
+  4. `legislation_enactment` — Signed into law, effective date, codified, enacted, promulgated
+  5. `legislation_topics` — Appropriations, authorization, fiscal year, bipartisan, reconciliation
+- Each rule has appropriate match_type (exact/fuzzy/regex), severity, and category.
+- Rules are seeded idempotently — running the script twice does not create duplicates.
+- Rules are immediately usable by the NLP keyword engine after seeding.
 
 ---
 

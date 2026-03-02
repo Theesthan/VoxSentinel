@@ -89,6 +89,8 @@ export interface StreamCreateRequest {
   language_override?: string | null;
   vad_threshold?: number;
   chunk_size_ms?: number;
+  keyword_rule_set_names?: string[];
+  alert_channel_ids?: string[];
   metadata?: Record<string, unknown> | null;
 }
 
@@ -228,7 +230,12 @@ export async function getHealth(): Promise<HealthResponse> {
 
 // ── Streams ──
 
-export const listStreams = () => apiFetch<StreamListResponse>("/streams");
+export const listStreams = (params?: { exclude_source_type?: string }) => {
+  const q = new URLSearchParams();
+  if (params?.exclude_source_type) q.set("exclude_source_type", params.exclude_source_type);
+  const qs = q.toString();
+  return apiFetch<StreamListResponse>(`/streams${qs ? `?${qs}` : ""}`);
+};
 
 export const getStream = (id: string) => apiFetch<Stream>(`/streams/${id}`);
 
@@ -345,3 +352,155 @@ export interface AuditVerifyResponse {
 
 export const verifySegment = (segmentId: string) =>
   apiFetch<AuditVerifyResponse>(`/audit/verify/${segmentId}`);
+
+// ── File Analyze ──
+
+export interface FileAnalyzeKeywordHit {
+  keyword: string;
+  match_type: string;
+  severity: string;
+}
+
+export interface FileAnalyzeSegment {
+  segment_id: string;
+  speaker_id: string | null;
+  start_offset_ms: number;
+  end_offset_ms: number;
+  text: string;
+  sentiment_label: string | null;
+  sentiment_score: number | null;
+  confidence: number;
+  keywords_matched: FileAnalyzeKeywordHit[];
+}
+
+export interface FileAnalyzeAlert {
+  alert_id: string;
+  alert_type: string;
+  severity: string;
+  matched_rule: string | null;
+  match_type: string | null;
+  matched_text: string | null;
+  speaker_id: string | null;
+  surrounding_context: string | null;
+  timestamp_offset_ms: number;
+}
+
+export interface FileAnalyzeSummary {
+  total_segments: number;
+  total_alerts: number;
+  sentiments: Record<string, number>;
+  speakers_detected: number;
+  languages_detected: string[];
+}
+
+export interface FileAnalyzeSubmitResponse {
+  job_id: string;
+  stream_id: string;
+  session_id: string;
+  status: string;
+  file_name: string;
+  created_at: string;
+}
+
+export interface FileAnalyzeStatusResponse {
+  job_id: string;
+  status: string;
+  progress_pct: number;
+  file_name: string;
+  stream_id: string | null;
+  session_id: string | null;
+  duration_seconds: number | null;
+  created_at: string;
+  completed_at: string | null;
+  error_message: string | null;
+  transcript: FileAnalyzeSegment[];
+  alerts: FileAnalyzeAlert[];
+  summary: FileAnalyzeSummary | null;
+}
+
+export interface FileAnalyzeJobSummary {
+  job_id: string;
+  status: string;
+  file_name: string;
+  duration_seconds: number | null;
+  total_alerts: number;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface FileAnalyzeListResponse {
+  jobs: FileAnalyzeJobSummary[];
+  total: number;
+}
+
+export async function submitFileForAnalysis(
+  file: File,
+  opts?: { name?: string; asr_backend?: string; keyword_rule_sets?: string },
+): Promise<FileAnalyzeSubmitResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  if (opts?.name) form.append("name", opts.name);
+  if (opts?.asr_backend) form.append("asr_backend", opts.asr_backend);
+  if (opts?.keyword_rule_sets) form.append("keyword_rule_sets", opts.keyword_rule_sets);
+
+  const key = getApiKey();
+  const res = await fetch(`${BASE}/file-analyze`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text);
+  }
+  return res.json();
+}
+
+export const getFileAnalyzeJob = (jobId: string) =>
+  apiFetch<FileAnalyzeStatusResponse>(`/file-analyze/${jobId}`);
+
+export const listFileAnalyzeJobs = (params?: { status?: string; limit?: number }) => {
+  const q = new URLSearchParams();
+  if (params?.status) q.set("status", params.status);
+  if (params?.limit) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  return apiFetch<FileAnalyzeListResponse>(`/file-analyze${qs ? `?${qs}` : ""}`);
+};
+
+// ── WebSocket helpers ──
+
+export function createTranscriptSocket(streamId: string): WebSocket {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return new WebSocket(`${proto}//${window.location.host}/ws/streams/${streamId}/transcript`);
+}
+
+export function createAlertSocket(): WebSocket {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return new WebSocket(`${proto}//${window.location.host}/ws/alerts`);
+}
+
+export function createMicSocket(): WebSocket {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return new WebSocket(`${proto}//${window.location.host}/ws/mic`);
+}
+
+// ── YouTube ──
+
+export interface YouTubeResolveResponse {
+  is_live: boolean;
+  title: string;
+  hls_url: string | null;
+  message: string;
+}
+
+export const resolveYouTubeUrl = (url: string) =>
+  apiFetch<YouTubeResolveResponse>("/youtube/resolve", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+
+export const youtubeDownloadAnalyze = (url: string) =>
+  apiFetch<FileAnalyzeSubmitResponse>("/youtube/download-analyze", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });

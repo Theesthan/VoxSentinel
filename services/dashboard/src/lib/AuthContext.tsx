@@ -2,10 +2,9 @@ import {
   createContext,
   useContext,
   useState,
-  useEffect,
   type ReactNode,
 } from "react";
-import { getApiKey, setApiKey, clearApiKey, getHealth } from "./api";
+import { getApiKey, setApiKey, getHealth } from "./api";
 
 interface AuthContextValue {
   apiKey: string;
@@ -25,34 +24,36 @@ const AuthCtx = createContext<AuthContextValue>({
 
 export const useAuth = () => useContext(AuthCtx);
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [apiKey, setKey] = useState("");
-  const [loading, setLoading] = useState(true);
+const DEFAULT_API_KEY = "dlbegt0aWo_i_htATSI9lCoV1sJV7QvjBeePCFNWICk";
 
-  // Check stored key on mount
-  useEffect(() => {
+export function AuthProvider({ children }: { children: ReactNode }) {
+  // Always initialise with the default key so the user is never prompted
+  const [apiKey, setKey] = useState(() => {
     const stored = getApiKey();
-    if (stored) {
-      setKey(stored);
-    }
-    setLoading(false);
-  }, []);
+    if (stored) return stored;
+    setApiKey(DEFAULT_API_KEY);
+    return DEFAULT_API_KEY;
+  });
+  const [loading] = useState(false); // never in loading state
 
   const login = async (key: string): Promise<boolean> => {
     setApiKey(key);
     try {
-      await getHealth(); // validate connectivity
+      await getHealth();
       setKey(key);
       return true;
     } catch {
-      clearApiKey();
+      // On failure, restore default key so user is never locked out
+      setApiKey(DEFAULT_API_KEY);
+      setKey(DEFAULT_API_KEY);
       return false;
     }
   };
 
   const logout = () => {
-    clearApiKey();
-    setKey("");
+    // Re-set default key instead of clearing — user is never locked out
+    setApiKey(DEFAULT_API_KEY);
+    setKey(DEFAULT_API_KEY);
   };
 
   return (

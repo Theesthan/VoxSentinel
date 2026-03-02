@@ -1,0 +1,547 @@
+"""
+File Analyze API router for VoxSentinel.
+
+Provides endpoints to upload audio/video files for asynchronous analysis.
+Uses Deepgram's pre-recorded (batch) REST API for reliable file
+transcription with speaker diarization.
+
+Video files (.mp4, .mkv, .avi, .mov, .webm, .flv) have their audio track
+extracted via FFmpeg before submission to Deepgram.
+
+Jobs are tracked in an in-process dict (sufficient for single-instance
+API gateway). For multi-instance deployments, move to Redis or DB.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import uuid as _uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import httpx
+import structlog
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+
+from api.dependencies import get_db_session, get_redis
+from api.schemas.file_analyze_schemas import (
+    FileAnalyzeAlert,
+    FileAnalyzeJobSummary,
+    FileAnalyzeKeywordHit,
+    FileAnalyzeListResponse,
+    FileAnalyzeSegment,
+    FileAnalyzeStatusResponse,
+    FileAnalyzeSubmitResponse,
+    FileAnalyzeSummary,
+)
+
+from tg_common.db.orm_models import AlertORM, SessionORM, StreamORM, TranscriptSegmentORM
+
+logger = structlog.get_logger()
+
+router = APIRouter(prefix="/file-analyze", tags=["file-analyze"])
+
+# ── In-process job store ──
+# Maps job_id (str) → job dict
+_jobs: dict[str, dict[str, Any]] = {}
+
+UPLOAD_DIR = Path(tempfile.gettempdir()) / "voxsentinel_uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Audio MIME type mapping for Deepgram
+_MIME_MAP: dict[str, str] = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".aac": "audio/aac",
+    ".wma": "audio/x-ms-wma",
+}
+
+# Video extensions that need audio extraction via FFmpeg
+_VIDEO_EXTENSIONS: set[str] = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".ts", ".m4v"}
+
+# All allowed upload extensions
+_ALLOWED_EXTENSIONS: set[str] = set(_MIME_MAP.keys()) | _VIDEO_EXTENSIONS
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _find_ffmpeg() -> str | None:
+    """Return the path to ffmpeg executable, or None."""
+    return shutil.which("ffmpeg")
+
+
+async def _extract_audio_from_video(video_path: Path, job_id: str) -> Path:
+    """Extract audio track from a video file using FFmpeg.
+
+    Returns path to a temporary WAV file containing the extracted audio.
+    Raises RuntimeError if FFmpeg fails.
+    """
+    ffmpeg_bin = _find_ffmpeg()
+    if not ffmpeg_bin:
+        raise RuntimeError(
+            "FFmpeg is not installed or not on PATH. "
+            "Video file upload requires FFmpeg for audio extraction."
+        )
+
+    audio_path = UPLOAD_DIR / f"{job_id}_audio.wav"
+    cmd = [
+        ffmpeg_bin,
+        "-i", str(video_path),
+        "-vn",                    # no video
+        "-acodec", "pcm_s16le",   # 16-bit PCM WAV
+        "-ar", "16000",           # 16 kHz sample rate (good for speech)
+        "-ac", "1",               # mono
+        "-y",                     # overwrite
+        str(audio_path),
+    ]
+
+    logger.info("ffmpeg_extract_start", job_id=job_id, cmd=" ".join(cmd))
+
+    proc = await asyncio.to_thread(
+        subprocess.run, cmd, capture_output=True, text=True, timeout=600,
+    )
+    if proc.returncode != 0:
+        logger.error("ffmpeg_extract_failed", stderr=proc.stderr[:500])
+        raise RuntimeError(f"FFmpeg audio extraction failed: {proc.stderr[:300]}")
+
+    if not audio_path.exists() or audio_path.stat().st_size == 0:
+        raise RuntimeError("FFmpeg produced empty audio output")
+
+    logger.info(
+        "ffmpeg_extract_done",
+        job_id=job_id,
+        audio_size=audio_path.stat().st_size,
+    )
+    return audio_path
+
+
+async def _run_pipeline(
+    job_id: str,
+    file_path: Path,
+    stream_id: _uuid.UUID,
+    session_id: _uuid.UUID,
+    asr_backend: str,
+    redis: Any,
+    db_session_factory: Any = None,
+) -> None:
+    """Background task: send audio to Deepgram pre-recorded API and
+    collect transcript with speaker diarization.
+
+    For video files the audio track is first extracted via FFmpeg.
+    """
+    job = _jobs[job_id]
+    audio_tmp: Path | None = None   # temp WAV from video extraction
+
+    try:
+        job["status"] = "processing"
+        job["progress_pct"] = 10
+
+        ext = file_path.suffix.lower()
+
+        # ── 1. If video, extract audio first ──
+        if ext in _VIDEO_EXTENSIONS:
+            logger.info("file_analyze_video_detected", job_id=job_id, ext=ext)
+            job["progress_pct"] = 15
+            audio_tmp = await _extract_audio_from_video(file_path, job_id)
+            audio_data = await asyncio.to_thread(audio_tmp.read_bytes)
+            mimetype = "audio/wav"
+        else:
+            audio_data = await asyncio.to_thread(file_path.read_bytes)
+            mimetype = _MIME_MAP.get(ext, "audio/wav")
+
+        logger.info(
+            "file_analyze_start",
+            job_id=job_id,
+            size=len(audio_data),
+            mime=mimetype,
+        )
+        job["progress_pct"] = 20
+
+        # ── 2. Call Deepgram pre-recorded REST API ──
+        api_key = os.getenv("TG_DEEPGRAM_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("TG_DEEPGRAM_API_KEY not configured")
+
+        job["progress_pct"] = 30
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+            resp = await client.post(
+                "https://api.deepgram.com/v1/listen",
+                headers={
+                    "Authorization": f"Token {api_key}",
+                    "Content-Type": mimetype,
+                },
+                params={
+                    "model": "nova-2",
+                    "smart_format": "true",
+                    "diarize": "true",
+                    "utterances": "true",
+                    "punctuate": "true",
+                    "detect_language": "true",
+                },
+                content=audio_data,
+            )
+            resp.raise_for_status()
+            dg_result = resp.json()
+
+        logger.info("file_analyze_deepgram_done", job_id=job_id)
+        job["progress_pct"] = 80
+
+        # ── 3. Parse Deepgram response ──
+        results = dg_result.get("results", {})
+        utterances = results.get("utterances") or []
+        channels = results.get("channels") or []
+
+        transcript_out: list[FileAnalyzeSegment] = []
+
+        if utterances:
+            # Prefer utterance-level output (has speaker diarization)
+            for utt in utterances:
+                speaker_raw = utt.get("speaker")
+                transcript_out.append(
+                    FileAnalyzeSegment(
+                        segment_id=_uuid.uuid4(),
+                        speaker_id=f"speaker_{speaker_raw}" if speaker_raw is not None else None,
+                        start_offset_ms=int(float(utt.get("start", 0)) * 1000),
+                        end_offset_ms=int(float(utt.get("end", 0)) * 1000),
+                        text=utt.get("transcript", ""),
+                        confidence=float(utt.get("confidence", 0.0)),
+                        keywords_matched=[],
+                    )
+                )
+        elif channels:
+            # Fallback: group words into sentences from channel data
+            try:
+                alt = channels[0]["alternatives"][0]
+                words = alt.get("words") or []
+                current_words: list[dict] = []
+                for w in words:
+                    current_words.append(w)
+                    pw = w.get("punctuated_word", w.get("word", ""))
+                    if pw and pw[-1] in ".!?":
+                        text = " ".join(
+                            cw.get("punctuated_word", cw.get("word", ""))
+                            for cw in current_words
+                        )
+                        spk = current_words[0].get("speaker")
+                        transcript_out.append(
+                            FileAnalyzeSegment(
+                                segment_id=_uuid.uuid4(),
+                                speaker_id=f"speaker_{spk}" if spk is not None else None,
+                                start_offset_ms=int(float(current_words[0].get("start", 0)) * 1000),
+                                end_offset_ms=int(float(current_words[-1].get("end", 0)) * 1000),
+                                text=text,
+                                confidence=sum(cw.get("confidence", 0) for cw in current_words) / max(len(current_words), 1),
+                                keywords_matched=[],
+                            )
+                        )
+                        current_words = []
+                # Remaining words
+                if current_words:
+                    text = " ".join(
+                        cw.get("punctuated_word", cw.get("word", ""))
+                        for cw in current_words
+                    )
+                    spk = current_words[0].get("speaker")
+                    transcript_out.append(
+                        FileAnalyzeSegment(
+                            segment_id=_uuid.uuid4(),
+                            speaker_id=f"speaker_{spk}" if spk is not None else None,
+                            start_offset_ms=int(float(current_words[0].get("start", 0)) * 1000),
+                            end_offset_ms=int(float(current_words[-1].get("end", 0)) * 1000),
+                            text=text,
+                            confidence=sum(cw.get("confidence", 0) for cw in current_words) / max(len(current_words), 1),
+                            keywords_matched=[],
+                        )
+                    )
+            except Exception:
+                logger.exception("file_analyze_channel_parse_error")
+
+        # ── 4. Keyword matching ──
+        job["progress_pct"] = 85
+        alerts_out: list[FileAnalyzeAlert] = []
+
+        # Fetch enabled rules from DB (simple approach — no heavy NLP engine needed)
+        keyword_rules: list[dict] = []
+        try:
+            if db_session_factory is not None:
+                from sqlalchemy import select as sa_select
+                async with db_session_factory() as _db:
+                    from tg_common.db.orm_models import KeywordRuleORM
+                    stmt = sa_select(KeywordRuleORM).where(KeywordRuleORM.enabled == True)
+                    res = await _db.execute(stmt)
+                    rows = res.scalars().all()
+                    keyword_rules = [
+                        {
+                            "rule_id": str(r.rule_id),
+                            "keyword": r.keyword,
+                            "match_type": r.match_type,
+                            "severity": r.severity,
+                            "category": r.category,
+                            "fuzzy_threshold": r.fuzzy_threshold,
+                        }
+                        for r in rows
+                    ]
+                    logger.info("file_analyze_rules_loaded", count=len(keyword_rules))
+        except Exception:
+            logger.warning("file_analyze_rules_load_skipped", reason="Could not load rules from DB")
+
+        # Match keywords against each segment
+        import re as _re
+        for seg in transcript_out:
+            seg_text_lower = seg.text.lower()
+            matched: list[FileAnalyzeKeywordHit] = []
+            for rule in keyword_rules:
+                kw = rule["keyword"]
+                hit = False
+                if rule["match_type"] == "exact":
+                    hit = kw.lower() in seg_text_lower
+                elif rule["match_type"] == "regex":
+                    try:
+                        hit = bool(_re.search(kw, seg.text, _re.IGNORECASE))
+                    except _re.error:
+                        pass
+                elif rule["match_type"] == "fuzzy":
+                    # Simple fuzzy: check if keyword words appear close together
+                    kw_words = kw.lower().split()
+                    hit = all(w in seg_text_lower for w in kw_words)
+                elif rule["match_type"] == "phonetic":
+                    hit = kw.lower() in seg_text_lower  # fallback to exact
+
+                if hit:
+                    matched.append(
+                        FileAnalyzeKeywordHit(
+                            keyword=kw,
+                            match_type=rule["match_type"],
+                            severity=rule["severity"],
+                        )
+                    )
+                    # Create alert for each match
+                    alerts_out.append(
+                        FileAnalyzeAlert(
+                            alert_id=_uuid.uuid4(),
+                            alert_type="keyword_match",
+                            severity=rule["severity"],
+                            matched_rule=rule["rule_id"],
+                            match_type=rule["match_type"],
+                            matched_text=kw,
+                            speaker_id=seg.speaker_id,
+                            surrounding_context=seg.text[:200],
+                            timestamp_offset_ms=seg.start_offset_ms,
+                        )
+                    )
+            seg.keywords_matched = matched
+
+        job["progress_pct"] = 95
+
+        # ── 5. Build summary ──
+        speakers: set[str] = set()
+        for seg in transcript_out:
+            if seg.speaker_id:
+                speakers.add(seg.speaker_id)
+
+        # Detect language from response metadata
+        detected_lang = "en"
+        try:
+            detected_lang = channels[0]["detected_language"] if channels else "en"
+        except (KeyError, IndexError):
+            pass
+
+        summary = FileAnalyzeSummary(
+            total_segments=len(transcript_out),
+            total_alerts=len(alerts_out),
+            sentiments={},
+            speakers_detected=len(speakers),
+            languages_detected=[detected_lang] if detected_lang else ["en"],
+        )
+
+        job["status"] = "completed"
+        job["progress_pct"] = 100
+        job["completed_at"] = _utc_now()
+        job["transcript"] = transcript_out
+        job["alerts"] = alerts_out
+        job["summary"] = summary
+
+        logger.info(
+            "file_analyze_complete",
+            job_id=job_id,
+            segments=len(transcript_out),
+            speakers=len(speakers),
+            alerts=len(alerts_out),
+        )
+
+    except Exception as exc:
+        logger.exception("file_analyze_pipeline_error", job_id=job_id)
+        job["status"] = "failed"
+        job["error_message"] = str(exc)
+    finally:
+        # Cleanup temp files
+        for p in (file_path, audio_tmp):
+            try:
+                if p and p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+
+
+@router.post("", status_code=202, response_model=FileAnalyzeSubmitResponse)
+async def submit_file(
+    request: Request,
+    file: UploadFile = File(...),
+    name: str = Form(default=""),
+    asr_backend: str = Form(default="deepgram_nova2"),
+    keyword_rule_sets: str = Form(default=""),
+    db: Any = Depends(get_db_session),
+    redis: Any = Depends(get_redis),
+) -> FileAnalyzeSubmitResponse:
+    """Upload an audio or video file and start asynchronous analysis.
+
+    Supported formats:
+    - Audio: .wav, .mp3, .m4a, .ogg, .flac, .aac, .wma
+    - Video: .mp4, .mkv, .avi, .mov, .webm, .flv, .wmv, .ts, .m4v
+      (audio is extracted via FFmpeg before transcription)
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    # Validate file extension
+    ext = Path(file.filename).suffix.lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))}",
+        )
+
+    # Save uploaded file to temp directory
+    job_id = _uuid.uuid4()
+    stream_id = _uuid.uuid4()
+    session_id = _uuid.uuid4()
+    now = _utc_now()
+
+    safe_name = file.filename.replace("/", "_").replace("\\", "_")
+    file_path = UPLOAD_DIR / f"{job_id}_{safe_name}"
+
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    display_name = name or file.filename or "unnamed"
+
+    # Create Stream + Session in DB
+    stream = StreamORM(
+        stream_id=stream_id,
+        name=f"[File] {display_name}",
+        source_type="file",
+        source_url=str(file_path),
+        asr_backend=asr_backend,
+        status="active",
+        session_id=session_id,
+        metadata_={"job_id": str(job_id), "file_name": display_name},
+    )
+    session = SessionORM(
+        session_id=session_id,
+        stream_id=stream_id,
+        asr_backend_used=asr_backend,
+    )
+    if db is not None:
+        db.add(stream)
+        db.add(session)
+        await db.commit()
+
+    # Store job metadata
+    _jobs[str(job_id)] = {
+        "job_id": job_id,
+        "stream_id": stream_id,
+        "session_id": session_id,
+        "status": "queued",
+        "progress_pct": 0,
+        "file_name": display_name,
+        "created_at": now,
+        "completed_at": None,
+        "error_message": None,
+        "transcript": [],
+        "alerts": [],
+        "summary": None,
+    }
+
+    # Start background processing
+    db_factory = getattr(request.app.state, "db_session_factory", None)
+    asyncio.create_task(
+        _run_pipeline(
+            str(job_id), file_path, stream_id, session_id, asr_backend, redis,
+            db_session_factory=db_factory,
+        ),
+    )
+
+    return FileAnalyzeSubmitResponse(
+        job_id=job_id,
+        stream_id=stream_id,
+        session_id=session_id,
+        status="processing",
+        file_name=display_name,
+        created_at=now,
+    )
+
+
+@router.get("/{job_id}", response_model=FileAnalyzeStatusResponse)
+async def get_job_status(job_id: _uuid.UUID) -> FileAnalyzeStatusResponse:
+    """Get the status and results of a file analysis job."""
+    job = _jobs.get(str(job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return FileAnalyzeStatusResponse(
+        job_id=job["job_id"],
+        status=job["status"],
+        progress_pct=job["progress_pct"],
+        file_name=job["file_name"],
+        stream_id=job.get("stream_id"),
+        session_id=job.get("session_id"),
+        created_at=job["created_at"],
+        completed_at=job.get("completed_at"),
+        error_message=job.get("error_message"),
+        transcript=job.get("transcript", []),
+        alerts=job.get("alerts", []),
+        summary=job.get("summary"),
+    )
+
+
+@router.get("", response_model=FileAnalyzeListResponse)
+async def list_jobs(
+    status: str | None = None,
+    limit: int = 20,
+) -> FileAnalyzeListResponse:
+    """List all file analysis jobs."""
+    all_jobs = list(_jobs.values())
+
+    if status:
+        all_jobs = [j for j in all_jobs if j["status"] == status]
+
+    # Sort by created_at descending
+    all_jobs.sort(key=lambda j: j["created_at"], reverse=True)
+    all_jobs = all_jobs[:limit]
+
+    summaries = [
+        FileAnalyzeJobSummary(
+            job_id=j["job_id"],
+            status=j["status"],
+            file_name=j["file_name"],
+            duration_seconds=None,
+            total_alerts=len(j.get("alerts", [])),
+            created_at=j["created_at"],
+            completed_at=j.get("completed_at"),
+        )
+        for j in all_jobs
+    ]
+    return FileAnalyzeListResponse(jobs=summaries, total=len(summaries))

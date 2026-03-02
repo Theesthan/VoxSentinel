@@ -42,6 +42,14 @@ postgres-data/
 redis-data/
 es-data/
 
+# Bundled runtime distributions (install separately)
+elasticsearch/
+redis5/
+
+# Redis / DB data dumps
+dump.rdb
+*.rdb
+
 # OS
 Thumbs.db
 .DS_Store

@@ -113,7 +113,7 @@ class ASRRouter:
                 token_json = token.model_dump_json()
                 await self._redis.xadd(
                     out_key,
-                    {"token": token_json},
+                    {"data": token_json},
                     maxlen=10_000,
                 )
                 log.debug(
