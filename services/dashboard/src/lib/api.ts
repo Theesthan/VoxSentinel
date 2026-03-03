@@ -198,7 +198,10 @@ export interface HealthResponse {
 // ── Health (no auth needed) ──
 
 export async function getHealth(): Promise<HealthResponse> {
-  const res = await fetch("/health");
+  const healthUrl = import.meta.env.VITE_API_BASE_URL
+    ? `${import.meta.env.VITE_API_BASE_URL}/health`
+    : "/health";
+  const res = await fetch(healthUrl);
   return res.json();
 }
 

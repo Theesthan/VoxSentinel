@@ -215,9 +215,13 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
          "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # web client
         {**base_opts, "format": "bestaudio/best",
          "extractor_args": {"youtube": {"player_client": ["android"]}}},                # android client
-        {**base_opts, "format": "bestaudio[ext=m4a]/bestaudio/best"},                   # more flexible format
+        {**base_opts, "format": "bestaudio[ext=m4a]/bestaudio/best"},                   # m4a preferred
         {**base_opts, "format": "bestaudio[ext=webm]/bestaudio/best",
          "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # webm via web
+        {**base_opts, "format": "best"},                                                # any format
+        {**base_opts, "format": "best",
+         "extractor_args": {"youtube": {"player_client": ["android"]}}},                # any format android
+        {**base_opts},                                                                  # no format restriction
     ]
 
     last_err: Exception | None = None
