@@ -23,12 +23,6 @@ sys.modules.setdefault("websockets", MagicMock(name="websockets"))
 # prometheus_client
 sys.modules.setdefault("prometheus_client", MagicMock(name="prometheus_client"))
 
-# elasticsearch — async wrapper
-_es_mod = MagicMock(name="elasticsearch")
-_async_es_cls = MagicMock(name="AsyncElasticsearch")
-_es_mod.AsyncElasticsearch = _async_es_cls
-sys.modules.setdefault("elasticsearch", _es_mod)
-
 # redis.asyncio mock — prevent real connections
 _redis_mod = MagicMock(name="redis")
 _redis_async = MagicMock(name="redis.asyncio")
@@ -51,14 +45,13 @@ os.environ.setdefault("TG_API_KEY", "test-api-key-1234")
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from api.dependencies import get_db_session, get_es_client, get_redis  # noqa: E402
+from api.dependencies import get_db_session, get_redis  # noqa: E402
 from api.routers import (  # noqa: E402
     alert_channels,
     alerts,
     audit,
     health,
     rules,
-    search,
     streams,
     transcripts,
 )
@@ -100,19 +93,9 @@ def mock_redis_client() -> AsyncMock:
     return redis
 
 
-@pytest.fixture()
-def mock_es() -> AsyncMock:
-    es = AsyncMock()
-    es.search = AsyncMock(return_value={"hits": {"total": {"value": 0}, "hits": []}})
-    es.ping = AsyncMock(return_value=True)
-    es.close = AsyncMock()
-    return es
-
-
 def _build_app(
     mock_db: AsyncMock,
     mock_redis_client: AsyncMock,
-    mock_es: AsyncMock,
 ) -> FastAPI:
     """Build a minimal FastAPI app with dependency overrides for testing."""
     app = FastAPI()
@@ -123,11 +106,9 @@ def _build_app(
 
     app.dependency_overrides[get_db_session] = _override_db
     app.dependency_overrides[get_redis] = lambda: mock_redis_client
-    app.dependency_overrides[get_es_client] = lambda: mock_es
 
     # State (for health checks / WS routers that access app.state directly)
     app.state.redis = mock_redis_client
-    app.state.es_client = mock_es
     app.state.db_session_factory = None
 
     # Register routers
@@ -136,7 +117,6 @@ def _build_app(
     app.include_router(rules.router, prefix=prefix)
     app.include_router(alerts.router, prefix=prefix)
     app.include_router(alert_channels.router, prefix=prefix)
-    app.include_router(search.router, prefix=prefix)
     app.include_router(transcripts.router, prefix=prefix)
     app.include_router(audit.router, prefix=prefix)
     app.include_router(health.router)
@@ -145,8 +125,8 @@ def _build_app(
 
 
 @pytest.fixture()
-def app(mock_db: AsyncMock, mock_redis_client: AsyncMock, mock_es: AsyncMock) -> FastAPI:
-    return _build_app(mock_db, mock_redis_client, mock_es)
+def app(mock_db: AsyncMock, mock_redis_client: AsyncMock) -> FastAPI:
+    return _build_app(mock_db, mock_redis_client)
 
 
 @pytest.fixture()

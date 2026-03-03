@@ -2,7 +2,7 @@
 Health check API router for VoxSentinel.
 
 Aggregated health endpoint returning status of all backend services,
-database, Elasticsearch, Redis, and ASR backends.
+database, Redis, and ASR backends.
 """
 
 from __future__ import annotations
@@ -47,17 +47,6 @@ async def health_check(request: Request) -> HealthResponse:
             services["redis"] = "not_configured"
     except Exception:
         services["redis"] = "unhealthy"
-
-    # Elasticsearch
-    try:
-        es = getattr(request.app.state, "es_client", None)
-        if es:
-            await es.ping()
-            services["elasticsearch"] = "healthy"
-        else:
-            services["elasticsearch"] = "not_configured"
-    except Exception:
-        services["elasticsearch"] = "unhealthy"
 
     overall = "healthy" if all(
         v in ("healthy", "not_configured") for v in services.values()

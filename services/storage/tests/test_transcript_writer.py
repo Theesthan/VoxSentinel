@@ -128,41 +128,6 @@ class TestWriteSegment:
         )
         assert result.segment_hash == expected
 
-    async def test_calls_es_indexer_after_write(self, mock_db_session, mock_db_session_factory):
-        from storage.transcript_writer import TranscriptWriter
-
-        mock_indexer = AsyncMock()
-        mock_indexer.index_segment = AsyncMock()
-        writer = TranscriptWriter(
-            session_factory=mock_db_session_factory,
-            es_indexer=mock_indexer,
-        )
-        seg = _make_segment()
-
-        await writer.write_segment(seg, db_session=mock_db_session)
-
-        mock_indexer.index_segment.assert_awaited_once()
-        call_args = mock_indexer.index_segment.call_args
-        assert call_args[0][0] is seg
-
-    async def test_es_failure_does_not_rollback_db(
-        self, mock_db_session, mock_db_session_factory,
-    ):
-        from storage.transcript_writer import TranscriptWriter
-
-        mock_indexer = AsyncMock()
-        mock_indexer.index_segment = AsyncMock(side_effect=RuntimeError("ES down"))
-        writer = TranscriptWriter(
-            session_factory=mock_db_session_factory,
-            es_indexer=mock_indexer,
-        )
-        seg = _make_segment()
-
-        # Should NOT raise — ES error is logged, not propagated.
-        result = await writer.write_segment(seg, db_session=mock_db_session)
-        assert result is not None
-        mock_db_session.commit.assert_awaited_once()
-
     async def test_db_failure_raises_and_rolls_back(
         self, mock_db_session, mock_db_session_factory,
     ):

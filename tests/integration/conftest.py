@@ -1,9 +1,9 @@
 """
 Integration test fixtures for VoxSentinel.
 
-Uses ``testcontainers`` to spin up disposable PostgreSQL, Redis, and
-Elasticsearch containers before the test session.  Provides async
-fixtures for database sessions, Redis clients, and ES clients.
+Uses ``testcontainers`` to spin up disposable PostgreSQL and Redis
+containers before the test session.  Provides async
+fixtures for database sessions and Redis clients.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
-from testcontainers.elasticsearch import ElasticSearchContainer
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
@@ -113,28 +112,6 @@ def redis_container() -> Iterator[RedisContainer]:
     r.stop()
 
 
-@pytest.fixture(scope="session")
-def elasticsearch_container() -> Iterator[ElasticSearchContainer]:
-    """Start a disposable Elasticsearch 8 container for the test session."""
-    with ElasticSearchContainer(
-        image="docker.elastic.co/elasticsearch/elasticsearch:8.13.0",
-    ) as es:
-        # Wait until ES is truly ready
-        import time
-        import urllib.request
-
-        url = es.get_url()
-        for _ in range(60):
-            try:
-                req = urllib.request.urlopen(f"{url}/_cluster/health?wait_for_status=yellow&timeout=2s")
-                if req.status == 200:
-                    break
-            except Exception:
-                pass
-            time.sleep(1)
-        yield es
-
-
 # ---------------------------------------------------------------------------
 # Connection-string fixtures
 # ---------------------------------------------------------------------------
@@ -160,12 +137,6 @@ def redis_url(redis_container: RedisContainer) -> str:
     host = redis_container.get_container_host_ip()
     port = redis_container.get_exposed_port(6379)
     return f"redis://{host}:{port}/0"
-
-
-@pytest.fixture(scope="session")
-def elasticsearch_url(elasticsearch_container: ElasticSearchContainer) -> str:
-    """Return the Elasticsearch HTTP URL for the test container."""
-    return elasticsearch_container.get_url()
 
 
 # ---------------------------------------------------------------------------
@@ -267,22 +238,6 @@ async def redis_client(redis_url: str) -> AsyncIterator[aioredis.Redis]:
     yield r
     await r.flushdb()
     await r.aclose()
-
-
-# ---------------------------------------------------------------------------
-# Elasticsearch client fixture
-# ---------------------------------------------------------------------------
-
-@pytest_asyncio.fixture
-async def es_client(elasticsearch_url: str) -> AsyncIterator:
-    """Yield a per-test async Elasticsearch client."""
-    from elasticsearch import AsyncElasticsearch
-
-    client = AsyncElasticsearch(elasticsearch_url)
-    yield client
-    # Clean up any indices created during the test
-    await client.indices.delete(index="_all", ignore_unavailable=True)
-    await client.close()
 
 
 # ---------------------------------------------------------------------------

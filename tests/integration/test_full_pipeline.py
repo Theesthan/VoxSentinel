@@ -50,7 +50,6 @@ def _get_test_app(
         audit,
         health,
         rules,
-        search,
         streams,
         transcripts,
         ws,
@@ -62,14 +61,12 @@ def _get_test_app(
     # (httpx ASGITransport skips lifespan events)
     app.state.db_session_factory = db_session_factory
     app.state.redis = redis_client
-    app.state.es_client = None
 
     api_prefix = "/api/v1"
     app.include_router(streams.router, prefix=api_prefix)
     app.include_router(rules.router, prefix=api_prefix)
     app.include_router(alerts.router, prefix=api_prefix)
     app.include_router(alert_channels.router, prefix=api_prefix)
-    app.include_router(search.router, prefix=api_prefix)
     app.include_router(transcripts.router, prefix=api_prefix)
     app.include_router(audit.router, prefix=api_prefix)
     app.include_router(health.router)

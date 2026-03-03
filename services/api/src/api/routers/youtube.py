@@ -393,13 +393,11 @@ async def download_and_analyze(
 
     # Start background processing
     db_factory = getattr(request.app.state, "db_session_factory", None)
-    es = getattr(request.app.state, "es_client", None)
     asyncio.create_task(
         _run_pipeline(
             str(job_id), audio_path, stream_id, session_id,
             "deepgram_nova2", redis,
             db_session_factory=db_factory,
-            es_client=es,
         ),
     )
 

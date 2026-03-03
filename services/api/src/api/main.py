@@ -79,20 +79,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # pragma: no cover
         app.state.db_session_factory = None
 
-    try:
-        from elasticsearch import AsyncElasticsearch
-
-        es_url = os.getenv("TG_ES_URL", os.getenv("ELASTICSEARCH_URL", "http://localhost:9200"))
-        app.state.es_client = AsyncElasticsearch(es_url)
-    except Exception:  # pragma: no cover
-        app.state.es_client = None
-
     yield
 
     # — Shutdown —
-    es = getattr(app.state, "es_client", None)
-    if es:
-        await es.close()
     r = getattr(app.state, "redis", None)
     if r:
         await r.close()

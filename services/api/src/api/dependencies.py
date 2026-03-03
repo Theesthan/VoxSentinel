@@ -35,6 +35,3 @@ async def get_redis(request: Request) -> Any:
     return getattr(request.app.state, "redis", None)
 
 
-async def get_es_client(request: Request) -> Any:
-    """Return the shared Elasticsearch client from app state."""
-    return getattr(request.app.state, "es_client", None)

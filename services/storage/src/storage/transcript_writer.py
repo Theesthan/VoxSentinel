@@ -45,18 +45,13 @@ class TranscriptWriter:
     ----------
     session_factory:
         Async callable returning an ``AsyncSession``.
-    es_indexer:
-        Optional Elasticsearch indexer; ``index_segment`` is called after
-        each successful DB write.
     """
 
     def __init__(
         self,
         session_factory: Callable[..., Any],
-        es_indexer: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
-        self._es_indexer = es_indexer
 
     async def write_segment(
         self,
@@ -120,16 +115,6 @@ class TranscriptWriter:
         finally:
             if own_session:
                 await session.close()
-
-        # Index in Elasticsearch after successful DB commit.
-        if self._es_indexer is not None:
-            try:
-                await self._es_indexer.index_segment(segment, seg_hash)
-            except Exception:
-                logger.exception(
-                    "es_index_failed",
-                    segment_id=str(segment.segment_id),
-                )
 
         return orm_obj
 

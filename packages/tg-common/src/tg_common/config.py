@@ -23,7 +23,6 @@ class Settings(BaseSettings):
         db_uri: Async PostgreSQL connection string.
         db_pool_size: SQLAlchemy connection-pool size.
         redis_url: Redis connection URL (caching, pub/sub, state).
-        es_url: Elasticsearch base URL.
         deepgram_api_key: API key for Deepgram Nova-2.
         whisper_host: Host:port for the self-hosted Whisper server.
         asr_default_backend: Default ASR engine identifier.
@@ -59,12 +58,6 @@ class Settings(BaseSettings):
     redis_url: str = Field(
         default="redis://localhost:6379/0",
         description="Redis connection URL.",
-    )
-
-    # ── Elasticsearch ──
-    es_url: str = Field(
-        default="http://localhost:9200",
-        description="Elasticsearch base URL.",
     )
 
     # ── ASR Backends ──

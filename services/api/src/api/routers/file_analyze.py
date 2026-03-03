@@ -261,7 +261,6 @@ async def _run_pipeline(
     asr_backend: str,
     redis: Any,
     db_session_factory: Any = None,
-    es_client: Any = None,
 ) -> None:
     """Background task: send audio to Deepgram pre-recorded API and
     collect transcript with speaker diarization.
@@ -563,34 +562,6 @@ async def _run_pipeline(
             except Exception:
                 logger.exception("file_analyze_alert_dispatch_error", job_id=job_id)
 
-        # ── 7. Index transcript segments into Elasticsearch ──
-        if es_client is not None:
-            try:
-                stream_name = job.get("file_name", "")
-                for seg in transcript_out:
-                    doc = {
-                        "segment_id": str(seg.segment_id),
-                        "session_id": str(session_id),
-                        "stream_id": str(stream_id),
-                        "stream_name": stream_name,
-                        "speaker_id": seg.speaker_id or "unknown",
-                        "timestamp": _utc_now().isoformat(),
-                        "text": seg.text,
-                        "sentiment_label": seg.sentiment_label or "neutral",
-                        "start_offset_ms": seg.start_offset_ms,
-                        "end_offset_ms": seg.end_offset_ms,
-                        "confidence": seg.confidence,
-                    }
-                    await es_client.index(
-                        index="transcripts",
-                        id=str(seg.segment_id),
-                        document=doc,
-                    )
-                logger.info("file_analyze_es_indexed", job_id=job_id,
-                            segments=len(transcript_out))
-            except Exception:
-                logger.exception("file_analyze_es_index_error", job_id=job_id)
-
         job["status"] = "completed"
         job["progress_pct"] = 100
         completed = _utc_now()
@@ -707,12 +678,10 @@ async def submit_file(
 
     # Start background processing
     db_factory = getattr(request.app.state, "db_session_factory", None)
-    es = getattr(request.app.state, "es_client", None)
     asyncio.create_task(
         _run_pipeline(
             str(job_id), file_path, stream_id, session_id, asr_backend, redis,
             db_session_factory=db_factory,
-            es_client=es,
         ),
     )
 

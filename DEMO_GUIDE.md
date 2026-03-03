@@ -6,7 +6,7 @@
 |---|---|
 | Docker Desktop | Running with ≥ 8 GB RAM allocated |
 | `.env` file | All keys filled (see below) |
-| Ports free | 3000, 5436, 5601, 6382, 8000–8007, 8011, 9200 |
+| Ports free | 3000, 5436, 6382, 8000–8007, 8011 |
 
 ### Required `.env` keys
 
@@ -53,7 +53,7 @@ curl http://localhost:8000/health
 
 **Expected output:**
 ```json
-{"status": "healthy", "services": {"database": "healthy", "redis": "healthy", "elasticsearch": "healthy"}}
+{"status": "healthy", "services": {"database": "healthy", "redis": "healthy"}}
 ```
 
 If any service shows `unhealthy`, check the corresponding container logs.
@@ -113,7 +113,6 @@ with Session(engine) as s:
 |---|---|
 | <http://localhost:3000> | Dashboard (landing + operational UI) |
 | <http://localhost:8000/docs> | Swagger API docs (interactive) |
-| <http://localhost:5601> | Kibana (Elasticsearch UI) |
 
 ---
 
@@ -260,13 +259,7 @@ curl -H "$AUTH" http://localhost:8000/api/v1/sessions/<session_id>/transcript
 
 ### 5.16 — Search Transcripts
 
-```bash
-curl -X POST -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{"query": "suspicious activity", "search_type": "fuzzy", "limit": 20}' \
-  http://localhost:8000/api/v1/search
-```
-
-Returns empty results unless transcripts have been indexed to Elasticsearch.
+> **Note:** The search endpoint has been removed (Elasticsearch dependency removed). Use the transcripts endpoint to retrieve segments.
 
 ### 5.17 — Verify Audit Trail
 
@@ -338,13 +331,11 @@ Shows counters and histograms: `api_requests_total`, `api_request_duration_secon
 | `nlp` | 8004 | Keywords, sentiment, PII |
 | `diarization` | 8005 | Speaker diarization (pyannote) |
 | `alerts` | 8006 | Alert dispatch (WS/Webhook/Slack) |
-| `storage` | 8007 | DB + ES write service |
+| `storage` | 8007 | DB write service |
 | `celery-worker` | — | Background tasks + retries |
 | `dashboard` | 3000 | React SPA + nginx reverse proxy |
 | `postgres` | 5436 | PostgreSQL + TimescaleDB |
 | `redis` | 6382 | Pub/sub + cache + Celery broker |
-| `elasticsearch` | 9200 | Full-text transcript search |
-| `kibana` | 5601 | ES visualization UI |
 
 ---
 
@@ -352,9 +343,8 @@ Shows counters and histograms: `api_requests_total`, `api_request_duration_secon
 
 | Item | Details |
 |---|---|
-| **No live audio source** | Without a real RTSP/HLS feed, the pipeline doesn't produce transcripts. All transcript/alert/search queries return empty. The API CRUD is fully functional. |
+| **No live audio source** | Without a real RTSP/HLS feed, the pipeline doesn't produce transcripts. All transcript/alert queries return empty. The API CRUD is fully functional. |
 | **Diarization degraded** | If the HF gated model license hasn't been accepted, diarization runs in degraded mode. This doesn't affect other services. |
-| **Search empty** | No transcripts = no Elasticsearch data. Search will return `[]` but with 200 status. |
 | **Dashboard data** | Dashboard shows empty stream/alert lists until real audio flows through the pipeline. |
 
 ---

@@ -2,7 +2,7 @@
 Health check endpoint for VoxSentinel storage service.
 
 Exposes a /health endpoint returning service status and connectivity
-checks for PostgreSQL and Elasticsearch.
+checks for PostgreSQL.
 """
 
 from __future__ import annotations

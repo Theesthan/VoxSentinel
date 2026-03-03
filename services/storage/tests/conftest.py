@@ -15,12 +15,6 @@ sys.path.append(str(Path(__file__).resolve().parent))
 
 # ─── Mock heavy deps before any application code is imported ───
 
-# elasticsearch — heavy C extension; mock entirely
-_es_mod = MagicMock(name="elasticsearch")
-_async_es_cls = MagicMock(name="AsyncElasticsearch")
-_es_mod.AsyncElasticsearch = _async_es_cls
-sys.modules.setdefault("elasticsearch", _es_mod)
-
 # asyncpg — native driver; not needed in unit tests
 sys.modules.setdefault("asyncpg", MagicMock(name="asyncpg"))
 
@@ -65,19 +59,6 @@ def mock_db_session() -> AsyncMock:
 def mock_db_session_factory(mock_db_session: AsyncMock):
     """Factory that always returns the same mock session."""
     return MagicMock(return_value=mock_db_session)
-
-
-@pytest.fixture()
-def mock_es_client() -> AsyncMock:
-    """Async mock standing in for ``AsyncElasticsearch``."""
-    es = AsyncMock()
-    es.index = AsyncMock(return_value={"result": "created", "_id": "test"})
-    es.search = AsyncMock(return_value={"hits": {"total": {"value": 0}, "hits": []}})
-    es.indices = AsyncMock()
-    es.indices.exists = AsyncMock(return_value=False)
-    es.indices.create = AsyncMock()
-    es.close = AsyncMock()
-    return es
 
 
 @pytest.fixture()

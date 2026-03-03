@@ -49,10 +49,10 @@ The file analyze pipeline bypasses VAD/ASR/NLP services entirely and calls Deepg
 | **Frameworks** | FastAPI, React 19, Vite 6 |
 | **ASR Engines** | Deepgram Nova-2 (streaming + pre-recorded), Whisper V3 Turbo |
 | **NLP** | Aho-Corasick, RapidFuzz, Regex, DistilBERT, Presidio + spaCy |
-| **Databases** | PostgreSQL 18, Elasticsearch 9.3.1 |
+| **Databases** | PostgreSQL 18 |
 | **Cache / Queues** | Redis 5.0.14.1, Celery |
 | **Observability** | Prometheus metrics, structlog (JSON) |
-| **Deployment** | Native local (Windows) or Docker Compose |
+| **Deployment** | Native local (Windows) |
 | **UI** | Tailwind CSS, shadcn/ui, Framer Motion |
 | **Linting / Types** | ruff, mypy (strict) |
 | **Testing** | pytest, pytest-asyncio, testcontainers |
@@ -69,7 +69,6 @@ The file analyze pipeline bypasses VAD/ASR/NLP services entirely and calls Deepg
 | **Node.js** | 20+ | [nodejs.org](https://nodejs.org/) |
 | **PostgreSQL** | 17+ | Running as a service or manually; create a database `voxsentinel` |
 | **Redis** | 5.0+ | [tporadowski Windows build](https://github.com/tporadowski/redis/releases) — extract to `redis5/` |
-| **Elasticsearch** | 9.x | [elastic.co](https://www.elastic.co/downloads/elasticsearch) — extract to `elasticsearch/` |
 | **FFmpeg** | 7+ | `winget install ffmpeg` (needed for video uploads) |
 | **Deepgram API key** | — | [console.deepgram.com](https://console.deepgram.com) — free tier works |
 
@@ -86,19 +85,14 @@ pip install -e packages/tg-common
 pip install -e services/api
 ```
 
-### 2. Start infrastructure (3 terminals)
+### 2. Start infrastructure (2 terminals)
 
 ```powershell
-# Terminal 1 — Elasticsearch
-cd elasticsearch
-bin\elasticsearch.bat
-# Wait until you see "started" in the output
-
-# Terminal 2 — Redis
+# Terminal 1 — Redis
 cd redis5
 redis-server.exe
 
-# Terminal 3 — PostgreSQL (skip if already running as a Windows service)
+# Terminal 2 — PostgreSQL (skip if already running as a Windows service)
 pg_ctl start -D "C:\Program Files\PostgreSQL\18\data"
 ```
 
@@ -148,7 +142,6 @@ npm run dev
 | API Health | http://localhost:8010/health | `{"status":"healthy","services":{...}}` |
 | API Docs | http://localhost:8010/docs | Swagger UI |
 | Dashboard | http://localhost:5173 | VoxSentinel UI |
-| Elasticsearch | http://localhost:9200 | Cluster info JSON |
 
 ### 8. YouTube Live Transcription (cookies setup)
 
@@ -212,7 +205,6 @@ cloudflared tunnel --url http://localhost:8010
 - **Sentiment Analysis** — DistilBERT-based sentiment scoring per segment
 - **PII Redaction** — Microsoft Presidio + spaCy for automatic PII removal
 - **Multi-Channel Alerts** — WebSocket, Slack, webhooks (dispatched automatically on keyword match)
-- **Full-Text Search** — *Removed in v1.1 — Elasticsearch indexing available via API for future use*
 - **Audit Trail** — SHA-256 hashed transcript segments with Merkle tree verification
 
 ## Running Tests
@@ -221,7 +213,7 @@ cloudflared tunnel --url http://localhost:8010
 # Unit tests
 python -m pytest services/ packages/ -q
 
-# Integration tests (requires Docker)
+# Integration tests (requires running PostgreSQL + Redis)
 python -m pytest tests/integration/ -q
 ```
 
@@ -237,7 +229,6 @@ python -m mypy services/ packages/ --ignore-missing-imports --explicit-package-b
 ```
 VoxSentinel/
 ├── .env.example                # Environment variable template
-├── docker-compose.yml          # Docker orchestration
 ├── pyproject.toml              # Shared ruff, mypy, pytest config
 ├── scripts/
 │   ├── create_tables.py        # DB table creation (bypasses Alembic async issues)
@@ -247,14 +238,13 @@ VoxSentinel/
 │   └── tg-common/              # Shared models, Redis client, DB ORM
 ├── services/
 │   ├── api/                    # REST + WebSocket gateway (:8010)
-│   ├── storage/                # PostgreSQL + Elasticsearch persistence (:8001)
+│   ├── storage/                # PostgreSQL persistence (:8001)
 │   ├── vad/                    # Voice Activity Detection — Silero (:8002)
 │   ├── asr/                    # Speech-to-Text — Deepgram / Whisper (:8003)
 │   ├── nlp/                    # Keywords, sentiment, PII redaction (:8004)
 │   ├── alerts/                 # Multi-channel alert dispatch (:8006)
 │   ├── ingestion/              # Audio ingest — FFmpeg + PyAV (:8007)
 │   └── dashboard/              # React 19 SPA (:5173)
-├── elasticsearch/              # ES 9.3.1 (local, extracted)
 ├── redis5/                     # Redis 5.0.14.1 (tporadowski, local)
 └── tests/
     └── integration/            # End-to-end pipeline tests

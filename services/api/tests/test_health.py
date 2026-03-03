@@ -27,7 +27,7 @@ class TestHealthCheck:
         resp = client.get("/health")
         data = resp.json()
         # In test mode no real connections exist; services report not_configured
-        for svc_name in ["database", "redis", "elasticsearch"]:
+        for svc_name in ["database", "redis"]:
             assert svc_name in data["services"]
 
     def test_health_overall_status(self, client: TestClient):

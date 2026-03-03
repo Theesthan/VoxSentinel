@@ -1,9 +1,8 @@
 """
 Storage service entry point for VoxSentinel.
 
-Initializes database connections, Elasticsearch client, subscribes to
-transcript and alert event streams, and exposes health and metrics
-endpoints.
+Initializes database connections, subscribes to transcript and alert
+event streams, and exposes health and metrics endpoints.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from prometheus_client import Counter, Histogram, make_asgi_app
 from storage.health import router as health_router
 from storage.transcript_writer import TranscriptWriter
 from storage.alert_writer import AlertWriter
-from storage.es_indexer import ESIndexer
 from storage.audit_hasher import AuditHasher
 
 logger = structlog.get_logger(__name__)
@@ -32,11 +30,6 @@ storage_writes_total = Counter(
     "storage_writes_total",
     "Total records written to PostgreSQL",
     ["table"],
-)
-storage_es_indexes_total = Counter(
-    "storage_es_indexes_total",
-    "Total documents indexed in Elasticsearch",
-    ["index"],
 )
 storage_write_duration_seconds = Histogram(
     "storage_write_duration_seconds",
@@ -129,22 +122,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     app.state.db_session_factory = session_factory
 
-    # ── Elasticsearch client ──
-    es_indexer: ESIndexer | None = None
-    try:
-        from elasticsearch import AsyncElasticsearch
-
-        es_url = os.getenv("TG_ES_URL", os.getenv("ELASTICSEARCH_URL", "http://localhost:9200"))
-        es_client = AsyncElasticsearch(es_url)
-        es_indexer = ESIndexer(es_client)
-        await es_indexer.ensure_index()
-        app.state.es_client = es_client
-    except Exception:
-        logger.warning("elasticsearch_unavailable")
-        app.state.es_client = None
-
     # ── Wire up writers ──
-    transcript_writer = TranscriptWriter(session_factory, es_indexer=es_indexer)
+    transcript_writer = TranscriptWriter(session_factory)
     alert_writer = AlertWriter(session_factory)
     audit_hasher = AuditHasher(session_factory)
 
@@ -165,12 +144,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await task
             except asyncio.CancelledError:
                 pass
-
-    if es_indexer:
-        try:
-            await es_indexer.close()
-        except Exception:
-            pass
 
     await engine.dispose()
     await redis.close()

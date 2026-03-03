@@ -58,10 +58,9 @@ dev = [
     "pytest-mock>=3.14",
     "ruff>=0.4",
     "mypy>=1.10",
-    "testcontainers[postgres,redis,elasticsearch]>=4.4",
+    "testcontainers[postgres,redis]>=4.4",
     "gtts>=2.5",
     "pydub>=0.25",
-    "elasticsearch[async]>=8.13",
 ]
 
 [tool.ruff]
