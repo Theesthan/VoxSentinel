@@ -97,6 +97,9 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 | Cryptographic audit hashing per segment | P1 |
 | Docker Compose deployment for development | P0 |
 | Kubernetes Helm chart for production | P1 |
+| AI-powered keyword suggestions via Groq (Llama 3.3 70B) | P1 |
+| Keyword/rule export & import (JSON) | P1 |
+| YouTube media worker service for delegated yt-dlp/FFmpeg | P1 |
 
 ### Deferred to V2+
 | Feature | Version |
@@ -428,6 +431,57 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - Each rule has appropriate match_type (exact/fuzzy/regex), severity, and category.
 - Rules are seeded idempotently — running the script twice does not create duplicates.
 - Rules are immediately usable by the NLP keyword engine after seeding.
+
+---
+
+### F15: AI-Powered Keyword Suggestions
+**Description:** Automatically suggest relevant keywords from a file-analyze transcript using the Groq API (Llama 3.3 70B Versatile). Helps operators quickly bootstrap keyword rules without manually listening to entire recordings.
+
+**User Story:** As an operator, after uploading and transcribing a file, I want the system to suggest contextually relevant keywords so I can quickly create monitoring rules.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- A new "AI Keywords" sub-tab appears in the File Job Detail view.
+- Clicking "Suggest Keywords" sends the first 3 000 words of the transcript to Groq.
+- The system returns up to 20 single-word or short-phrase keywords.
+- Each keyword renders as a clickable pill button in the dashboard.
+- Clicking a pill creates a new rule with that keyword (exact match, medium severity).
+- If `GROQ_API_KEY` is not set, the endpoint returns a clear error message.
+- Free-tier Groq keys work out of the box (no billing required).
+
+---
+
+### F16: Keyword / Rule Export & Import
+**Description:** Allow operators to export all rules as a JSON file and import rules from a previously exported file. Enables sharing rule sets across instances and backing up configurations.
+
+**User Story:** As an operator, I want to export my keyword rules to a file so I can back them up, share them with a colleague, or import them into another VoxSentinel instance.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- An "Export" button downloads all rules as `voxsentinel_rules.json`.
+- An "Import" button accepts a `.json` file and creates rules from it.
+- Duplicate keywords are skipped during import (no duplicate rules created).
+- The export format includes `keyword`, `match_type`, `severity`, `category`, and `description`.
+- Import reports the number of rules created vs. skipped.
+
+---
+
+### F17: YouTube Media Worker Service
+**Description:** A standalone FastAPI micro-service that runs `yt-dlp` and `ffmpeg` on a machine with unrestricted YouTube access (e.g., a home PC). The main VoxSentinel API delegates YouTube operations to this worker via HTTP, solving the problem of cloud providers blocking or throttling YouTube downloads.
+
+**User Story:** As a deployer, I want to run the YouTube download/capture logic on my home machine so that the Railway-hosted API can still process YouTube streams without being blocked.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- Worker exposes three endpoints: `/resolve`, `/download-audio`, `/capture-chunk`.
+- All endpoints require `Authorization: Bearer <secret>` authentication.
+- If `YT_WORKER_URL` is set on the API, YouTube operations are delegated to the worker.
+- If `YT_WORKER_URL` is not set, the API falls back to local yt-dlp (for local dev).
+- Worker includes its own `requirements.txt`, `start_worker.bat`, and `README.md`.
+- Audio data is transferred as base64-encoded WAV.
 
 ---
 

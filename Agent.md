@@ -213,6 +213,7 @@ VoxSentinel runs entirely natively on Windows without Docker:
 |---------|------|-------|
 | API Gateway | 8010 | Main backend — handles REST, WebSocket, file analyze, YouTube |
 | Dashboard | 5173 | Vite dev server, proxies `/api` → `http://localhost:8010` |
+| YT Media Worker | 8787 | Standalone yt-dlp/FFmpeg service (runs on separate machine) |
 | PostgreSQL | 5432 | Stores streams, sessions, transcripts, alerts, rules, channels |
 | Redis | 6379 | Caching and rate limiting |
 | Elasticsearch | 9200 | Full-text transcript search index |
@@ -226,6 +227,9 @@ VoxSentinel runs entirely natively on Windows without Docker:
 | `TG_DB_URI` | PostgreSQL connection (default: `postgresql+asyncpg://voxsentinel:changeme@localhost:5432/voxsentinel`) |
 | `TG_REDIS_URL` | Redis URL (default: `redis://localhost:6379/0`) |
 | `TG_ES_URL` | Elasticsearch URL (default: `http://localhost:9200`) |
+| `GROQ_API_KEY` | Groq API key for AI-powered keyword suggestions (free at console.groq.com) |
+| `YT_WORKER_URL` | YouTube Media Worker base URL for delegating yt-dlp/FFmpeg ops (e.g. `http://home-ip:8787`) |
+| `YT_WORKER_SECRET` | Shared secret for authenticating with the YT Media Worker |
 
 #### Deployment
 
@@ -1096,5 +1100,69 @@ Follow [Semantic Versioning](https://semver.org/) 2.0:
 - `PATCH`: Bug fixes, backward-compatible
 
 Tags: `v1.0.0`, `v1.1.0`, etc.
+
+---
+
+## 8. Recent Feature Additions
+
+### 8.1 AI-Powered Keyword Suggestions (Groq / Llama 3.3 70B)
+
+**Endpoint:** `POST /file-analyze/{job_id}/suggest-keywords`
+
+Uses the Groq API (model `llama-3.3-70b-versatile`) to analyze a file-analyze transcript and return contextually relevant keyword suggestions. The endpoint reads the first 3 000 words of the transcript, sends them to Groq with a system prompt requesting ≤20 single-word or short-phrase keywords, and returns a JSON list.
+
+**Flow:**
+```
+Dashboard "AI Keywords" sub-tab  →  POST /file-analyze/{job_id}/suggest-keywords
+                                       │
+                                       ├─ load transcript from DB
+                                       ├─ call Groq chat completion
+                                       └─ return { keywords: [...] }
+```
+
+**Frontend:** New "AI Keywords" sub-tab in `FileJobDetail`. Keywords render as clickable pill buttons — clicking a keyword adds it as a new rule.
+
+**Env var:** `GROQ_API_KEY` (free at https://console.groq.com)
+
+### 8.2 Keyword / Rule Export & Import
+
+**Endpoints:**
+- `GET  /rules/export` → returns all rules as a JSON array download (`voxsentinel_rules.json`)
+- `POST /rules/import` → accepts a JSON file upload, creates rules (skips duplicates by keyword)
+
+**Frontend:** Export/Import buttons in the Rules sub-panel header. Export triggers a browser download; Import opens a file picker for `.json` files.
+
+### 8.3 YouTube Media Worker (Separate Service)
+
+**Problem:** Railway (and many cloud providers) cannot run `yt-dlp` or `ffmpeg` due to network restrictions / missing binaries. YouTube operations (resolve, download audio, capture live chunks) must happen on a machine with unrestricted access.
+
+**Architecture:**
+```
+┌──────────── Railway ────────────┐      ┌──── Home PC / VPS ────┐
+│  VoxSentinel API (port 8010)    │      │  yt_worker (port 8787) │
+│                                 │      │                        │
+│  youtube.py                     │ HTTP │  /resolve              │
+│    _worker_resolve()  ─────────────►   │  /download-audio       │
+│    _worker_download_audio()  ──────►   │  /capture-chunk        │
+│    _worker_capture_chunk()  ───────►   │                        │
+│                                 │      │  yt-dlp + ffmpeg       │
+└─────────────────────────────────┘      └────────────────────────┘
+```
+
+**Worker location:** `yt_worker/` directory in the repo root.
+
+**Worker endpoints:**
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/resolve` | Resolves YouTube URL → title, formats, duration |
+| POST | `/download-audio` | Downloads full audio as WAV, returns base64 |
+| POST | `/capture-chunk` | Captures a live-stream chunk as WAV, returns base64 |
+
+**Authentication:** `Authorization: Bearer <YT_WORKER_SECRET>` header on every request.
+
+**Env vars (API side):** `YT_WORKER_URL`, `YT_WORKER_SECRET`
+**Env vars (Worker side):** `WORKER_PORT` (default 8787), `WORKER_SECRET`
+
+**Fallback:** If `YT_WORKER_URL` is not set, `youtube.py` falls back to local `yt-dlp`/`ffmpeg` (works for local dev).
 
 ---
