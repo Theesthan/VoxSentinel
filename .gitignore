@@ -23,6 +23,7 @@ dist/
 !requirements.txt
 !LICENSE.txt
 !cookies/vidcookie.txt
+.deps_installed
 
 # Secrets & Config
 .env
