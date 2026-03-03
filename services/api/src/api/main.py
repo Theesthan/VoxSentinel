@@ -74,6 +74,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "TG_DB_URI",
             os.getenv("DATABASE_URL", "postgresql+asyncpg://voxsentinel:changeme@localhost:5432/voxsentinel"),
         )
+        # Railway (and most cloud providers) supply postgresql:// — asyncpg requires postgresql+asyncpg://
+        if db_url.startswith("postgresql://"):
+            db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
         engine = create_async_engine(db_url, echo=False)
         app.state.db_session_factory = async_sessionmaker(engine, expire_on_commit=False)
     except Exception:  # pragma: no cover

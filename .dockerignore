@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.coverage
+.pytest_cache/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend (dashboard is a separate Railway service)
+services/dashboard/node_modules/
+services/dashboard/dist/
+services/dashboard/.cache/
+
+# Local runtime distributions (not needed in container)
+redis5/
+elasticsearch/
+
+# Secrets
+.env
+.env.local
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Data / volumes
+postgres-data/
+redis-data/
+es-data/
+dump.rdb
+*.rdb
+
+# Cookies (sensitive — set TG_COOKIES_FILE env var in Railway instead)
+cookies/
+
+# Docs / markdown (not needed at runtime)
+*.md
+docs/
+proto/
+samples/
+
+# Tests
+tests/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
