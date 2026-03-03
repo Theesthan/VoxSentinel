@@ -135,8 +135,8 @@ async def _resolve_youtube(url: str) -> dict:
     }
 
 
-# Path to Netscape cookies.txt for YouTube authentication.
-# Priority: TG_COOKIES_FILE env var → cookies/vidcookie.txt → cookies/cookies.txt
+# Path to Netscape cookies file for YouTube authentication.
+# Priority: TG_COOKIES_FILE env var → cookies/vidcookie.txt
 def _find_cookies_file() -> Path:
     env_path = os.getenv("TG_COOKIES_FILE")
     if env_path:
@@ -144,13 +144,7 @@ def _find_cookies_file() -> Path:
     # VoxSentinel root = 5 levels up from this file
     # (routers → api → src → api → services → VoxSentinel)
     root = Path(__file__).resolve().parents[5]
-    preferred = root / "cookies" / "vidcookie.txt"
-    if preferred.exists():
-        return preferred
-    fallback = root / "cookies" / "cookies.txt"
-    if fallback.exists():
-        return fallback
-    return root / "cookies.txt"  # legacy location
+    return root / "cookies" / "vidcookie.txt"
 
 _COOKIES_FILE = _find_cookies_file()
 
@@ -167,7 +161,7 @@ def _yt_dlp_strategies() -> list[dict]:
 
     strategies = []
 
-    # If a cookies.txt file exists, try it first (most reliable)
+    # If vidcookie.txt exists, try it first (most reliable)
     if _COOKIES_FILE.exists():
         strategies.append({**base, "cookiefile": str(_COOKIES_FILE)})
 

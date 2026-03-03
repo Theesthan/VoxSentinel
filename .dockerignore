@@ -35,9 +35,6 @@ es-data/
 dump.rdb
 *.rdb
 
-# Cookies (sensitive — set TG_COOKIES_FILE env var in Railway instead)
-cookies/
-
 # Docs / markdown (not needed at runtime)
 *.md
 docs/

@@ -170,9 +170,7 @@ YouTube **live** streams are supported via `POST /api/v1/youtube/live-transcribe
 **Note:** YouTube requires browser cookies in Netscape format for HLS URL
 extraction. VoxSentinel looks in this order:
 1. `TG_COOKIES_FILE` env var (absolute path)
-2. `cookies/vidcookie.txt` — YouTube-specific cookies (**recommended**; tested working)
-3. `cookies/cookies.txt` — general browser cookie export
-4. `cookies.txt` at the VoxSentinel root (legacy fallback)
+2. `cookies/vidcookie.txt` — YouTube cookies (export via "Get cookies.txt LOCALLY" browser extension)
 
 Without cookies, liveness detection works via HTTP scraping but live audio capture
 will fail (no HLS URL returned by yt-dlp).

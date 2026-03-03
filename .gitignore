@@ -22,6 +22,7 @@ dist/
 *.txt
 !requirements.txt
 !LICENSE.txt
+!cookies/vidcookie.txt
 
 # Secrets & Config
 .env

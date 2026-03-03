@@ -148,9 +148,7 @@ npm run dev
 YouTube requires browser cookies to extract HLS stream URLs. VoxSentinel looks
 for cookie files in this priority order:
 1. `TG_COOKIES_FILE` environment variable (absolute path)
-2. `cookies/vidcookie.txt` — YouTube-only cookies (**recommended**)
-3. `cookies/cookies.txt` — general browser cookie export
-4. `cookies.txt` in the VoxSentinel root (legacy location)
+2. `cookies/vidcookie.txt` — YouTube cookies
 
 To export YouTube cookies:
 1. Install the **"Get cookies.txt LOCALLY"** extension in your browser
