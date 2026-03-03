@@ -152,30 +152,44 @@ def _find_cookies_file() -> Path:
     return root / "cookies" / "vidcookie.txt"
 
 _COOKIES_FILE = _find_cookies_file()
+logger.info("youtube_cookies", path=str(_COOKIES_FILE), exists=_COOKIES_FILE.exists())
+
+# Player clients ordered by reliability on datacenter IPs.
+# tv_embedded & mweb bypass PO-token checks that block cloud servers.
+_PLAYER_CLIENTS: list[list[str]] = [
+    ["tv_embedded"],
+    ["mweb"],
+    ["tv"],
+    ["mediaconnect"],
+    ["android"],
+    ["web"],
+]
+
+
+def _base_opts(*, skip_download: bool = False) -> dict[str, Any]:
+    """Shared yt-dlp options for every strategy."""
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "geo_bypass": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "skip_download": skip_download,
+    }
+    if _COOKIES_FILE.exists():
+        opts["cookiefile"] = str(_COOKIES_FILE)
+    return opts
 
 
 def _yt_dlp_strategies() -> list[dict]:
-    """Return a list of yt-dlp option dicts to try in order."""
-    base = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "format": "bestaudio/best",
-        "remote_components": {"ejs:github"},
-    }
-
-    strategies = []
-
-    # If vidcookie.txt exists, try it first (most reliable)
-    if _COOKIES_FILE.exists():
-        strategies.append({**base, "cookiefile": str(_COOKIES_FILE)})
-
-    # Fallback strategies without cookies
-    strategies.extend([
-        {**base, "extractor_args": {"youtube": {"player_client": ["android"]}}},
-        {**base, "extractor_args": {"youtube": {"player_client": ["web"]}}},
-        {**base},
-    ])
+    """Return a list of yt-dlp option dicts to try in order (resolve / info-only)."""
+    base = {**_base_opts(skip_download=True), "format": "bestaudio/best"}
+    strategies: list[dict] = []
+    for pc in _PLAYER_CLIENTS:
+        strategies.append({**base, "extractor_args": {"youtube": {"player_client": pc}}})
+    # bare fallback (default client)
+    strategies.append(base)
     return strategies
 
 
@@ -191,15 +205,15 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
     """Download audio from a YouTube VOD using yt-dlp + FFmpeg.
 
     Tries multiple player-client strategies to work around YouTube's
-    format restrictions.  Returns path to the downloaded WAV file.
+    format restrictions on cloud/datacenter IPs.  Returns path to the
+    downloaded WAV file.
     """
     import yt_dlp
 
     output_path = UPLOAD_DIR / f"{job_id}_yt_audio.wav"
 
-    base_opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
+    dl_base: dict[str, Any] = {
+        **_base_opts(skip_download=False),
         "outtmpl": str(UPLOAD_DIR / f"{job_id}_yt_raw.%(ext)s"),
         "postprocessors": [
             {
@@ -208,30 +222,23 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
                 "preferredquality": "0",
             }
         ],
-        "remote_components": {"ejs:github"},
     }
-    if _COOKIES_FILE.exists():
-        base_opts["cookiefile"] = str(_COOKIES_FILE)
 
-    # Strategies ordered from most-reliable to least
-    strategies: list[dict[str, Any]] = [
-        {**base_opts, "format": "bestaudio/best"},                                      # default client
-        {**base_opts, "format": "bestaudio/best",
-         "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # web client
-        {**base_opts, "format": "bestaudio/best",
-         "extractor_args": {"youtube": {"player_client": ["android"]}}},                # android client
-        {**base_opts, "format": "bestaudio[ext=m4a]/bestaudio/best"},                   # m4a preferred
-        {**base_opts, "format": "bestaudio[ext=webm]/bestaudio/best",
-         "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # webm via web
-        {**base_opts, "format": "best"},                                                # any format
-        {**base_opts, "format": "best",
-         "extractor_args": {"youtube": {"player_client": ["android"]}}},                # any format android
-        {**base_opts, "format": "best",
-         "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # any format web
-        {**{k: v for k, v in base_opts.items() if k != "format"}},                      # no format restriction at all
-        {**{k: v for k, v in base_opts.items() if k != "format"},
-         "extractor_args": {"youtube": {"player_client": ["android"]}}},                # no format + android
-    ]
+    # Build strategies: each player-client × two format selectors, then bare
+    format_selectors = ["bestaudio/best", "best"]
+    strategies: list[dict[str, Any]] = []
+    for pc in _PLAYER_CLIENTS:
+        for fmt in format_selectors:
+            strategies.append({
+                **dl_base,
+                "format": fmt,
+                "extractor_args": {"youtube": {"player_client": pc}},
+            })
+    # bare fallback (default client) with both format selectors
+    for fmt in format_selectors:
+        strategies.append({**dl_base, "format": fmt})
+    # absolute last resort: no format key at all
+    strategies.append({k: v for k, v in dl_base.items() if k != "format"})
 
     last_err: Exception | None = None
     for strat in strategies:
@@ -264,9 +271,13 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
             logger.warning("yt_download_strategy_failed",
                            strategy=strat.get("extractor_args", "default"),
                            format=strat.get("format"),
-                           error=str(exc)[:150])
+                           cookies=bool(strat.get("cookiefile")),
+                           error=str(exc)[:300])
             continue
 
+    logger.error("yt_download_all_strategies_exhausted",
+                 url=url, total_strategies=len(strategies),
+                 last_error=str(last_err)[:300])
     raise RuntimeError(
         f"All yt-dlp download strategies failed: {str(last_err)[:200]}"
     )

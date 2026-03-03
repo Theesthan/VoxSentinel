@@ -28,10 +28,10 @@ RUN pip install --no-cache-dir -e packages/tg-common && \
     pip install --no-cache-dir -e services/api && \
     pip install --no-cache-dir \
         python-dotenv \
-        yt-dlp \
         "deepgram-sdk>=3.0" \
         pyahocorasick \
-        rapidfuzz
+        rapidfuzz && \
+    pip install --no-cache-dir --upgrade yt-dlp
 
 # ── Port ──────────────────────────────────────────────────────────────────────
 # Railway injects $PORT at runtime; we default to 8010 for local docker runs.
