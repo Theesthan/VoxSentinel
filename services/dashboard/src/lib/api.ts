@@ -10,6 +10,22 @@ const BASE = import.meta.env.VITE_API_BASE_URL
   ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
   : "/api/v1";
 
+/**
+ * Derive the WebSocket base from VITE_API_BASE_URL.
+ * In production the API lives on a different domain from the dashboard.
+ */
+function _wsBase(): string {
+  const url = import.meta.env.VITE_API_BASE_URL;
+  if (url) {
+    // https://foo.railway.app → wss://foo.railway.app
+    const parsed = new URL(url);
+    const proto = parsed.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${parsed.host}`;
+  }
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}`;
+}
+
 // ── Auth helpers ──
 
 export function getApiKey(): string {
@@ -439,18 +455,15 @@ export const listFileAnalyzeJobs = (params?: { status?: string; limit?: number }
 // ── WebSocket helpers ──
 
 export function createTranscriptSocket(streamId: string): WebSocket {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return new WebSocket(`${proto}//${window.location.host}/ws/streams/${streamId}/transcript`);
+  return new WebSocket(`${_wsBase()}/ws/streams/${streamId}/transcript`);
 }
 
 export function createAlertSocket(): WebSocket {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return new WebSocket(`${proto}//${window.location.host}/ws/alerts`);
+  return new WebSocket(`${_wsBase()}/ws/alerts`);
 }
 
 export function createMicSocket(): WebSocket {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return new WebSocket(`${proto}//${window.location.host}/ws/mic`);
+  return new WebSocket(`${_wsBase()}/ws/mic`);
 }
 
 // ── YouTube ──

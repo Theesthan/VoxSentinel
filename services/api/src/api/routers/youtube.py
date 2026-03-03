@@ -136,13 +136,18 @@ async def _resolve_youtube(url: str) -> dict:
 
 
 # Path to Netscape cookies file for YouTube authentication.
-# Priority: TG_COOKIES_FILE env var → cookies/vidcookie.txt
+# Priority: TG_COOKIES_FILE env var → /app/cookies/vidcookie.txt → relative to repo root
 def _find_cookies_file() -> Path:
     env_path = os.getenv("TG_COOKIES_FILE")
     if env_path:
-        return Path(env_path)
-    # VoxSentinel root = 5 levels up from this file
-    # (routers → api → src → api → services → VoxSentinel)
+        p = Path(env_path)
+        if p.exists():
+            return p
+    # Docker: files are at /app/cookies/vidcookie.txt
+    docker_path = Path("/app/cookies/vidcookie.txt")
+    if docker_path.exists():
+        return docker_path
+    # Local dev: VoxSentinel root = 5 levels up from this file
     root = Path(__file__).resolve().parents[5]
     return root / "cookies" / "vidcookie.txt"
 
@@ -221,7 +226,11 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
         {**base_opts, "format": "best"},                                                # any format
         {**base_opts, "format": "best",
          "extractor_args": {"youtube": {"player_client": ["android"]}}},                # any format android
-        {**base_opts},                                                                  # no format restriction
+        {**base_opts, "format": "best",
+         "extractor_args": {"youtube": {"player_client": ["web"]}}},                    # any format web
+        {**{k: v for k, v in base_opts.items() if k != "format"}},                      # no format restriction at all
+        {**{k: v for k, v in base_opts.items() if k != "format"},
+         "extractor_args": {"youtube": {"player_client": ["android"]}}},                # no format + android
     ]
 
     last_err: Exception | None = None
