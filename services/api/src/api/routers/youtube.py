@@ -80,6 +80,11 @@ async def _resolve_youtube(url: str) -> dict:
         except Exception:
             continue
 
+    # --- Fallback: yt-dlp subprocess (handles bot challenges better on cloud) ---
+    if info is None:
+        logger.warning("yt_dlp_library_failed_trying_subprocess", url=url)
+        info = await _yt_dlp_subprocess_extract(url)
+
     if info is not None:
         is_live = info.get("is_live", False) or info.get("live_status") == "is_live"
         title = info.get("title", "Unknown")
@@ -172,10 +177,18 @@ def _base_opts(*, skip_download: bool = False) -> dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "geo_bypass": True,
+        "nocheckcertificate": True,
         "socket_timeout": 30,
         "retries": 3,
         "fragment_retries": 3,
         "skip_download": skip_download,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+        },
     }
     if _COOKIES_FILE.exists():
         opts["cookiefile"] = str(_COOKIES_FILE)
@@ -199,6 +212,117 @@ def _yt_dlp_extract(url: str, opts: dict) -> dict:
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
+
+
+# ── Subprocess fallbacks (handle bot-checks better on cloud IPs) ─────────────
+
+
+def _subprocess_cookie_args() -> list[str]:
+    """Return ["--cookies", path] if the cookie file exists, else []."""
+    if _COOKIES_FILE.exists():
+        return ["--cookies", str(_COOKIES_FILE)]
+    return []
+
+
+async def _yt_dlp_subprocess_extract(url: str) -> dict | None:
+    """Try yt-dlp as a subprocess — often bypasses library limitations on cloud."""
+    for pc in _PLAYER_CLIENTS:
+        cmd = [
+            "yt-dlp",
+            "--dump-json",
+            "--no-download",
+            "--geo-bypass",
+            "--no-check-certificates",
+            "--extractor-args", f"youtube:player_client={','.join(pc)}",
+            "-f", "bestaudio/best",
+            *_subprocess_cookie_args(),
+            url,
+        ]
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=45,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                first_line = proc.stdout.strip().split("\n")[0]
+                return json.loads(first_line)
+        except Exception as exc:
+            logger.warning("yt_subprocess_extract_failed",
+                           client=pc, error=str(exc)[:120])
+            continue
+    return None
+
+
+async def _get_stream_url_subprocess(url: str) -> str | None:
+    """Get a playable stream/HLS URL using yt-dlp --get-url subprocess."""
+    for pc in _PLAYER_CLIENTS:
+        cmd = [
+            "yt-dlp",
+            "--get-url",
+            "--geo-bypass",
+            "--no-check-certificates",
+            "--extractor-args", f"youtube:player_client={','.join(pc)}",
+            "-f", "bestaudio/best",
+            *_subprocess_cookie_args(),
+            url,
+        ]
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=30,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip().split("\n")[0]
+        except Exception as exc:
+            logger.warning("yt_subprocess_geturl_failed",
+                           client=pc, error=str(exc)[:120])
+            continue
+    return None
+
+
+async def _download_youtube_audio_subprocess(
+    url: str, job_id: str, output_path: Path,
+) -> Path | None:
+    """Fallback: download audio via yt-dlp subprocess."""
+    outtmpl = str(UPLOAD_DIR / f"{job_id}_yt_raw.%(ext)s")
+    for pc in _PLAYER_CLIENTS:
+        # Clean up leftovers
+        for f in UPLOAD_DIR.glob(f"{job_id}_yt_raw.*"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+
+        cmd = [
+            "yt-dlp",
+            "--geo-bypass",
+            "--no-check-certificates",
+            "--extractor-args", f"youtube:player_client={','.join(pc)}",
+            "-f", "bestaudio/best",
+            "--extract-audio",
+            "--audio-format", "wav",
+            "-o", outtmpl,
+            *_subprocess_cookie_args(),
+            url,
+        ]
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=300,
+            )
+            if proc.returncode == 0:
+                wav = UPLOAD_DIR / f"{job_id}_yt_raw.wav"
+                if wav.exists():
+                    wav.rename(output_path)
+                    return output_path
+                for f in UPLOAD_DIR.glob(f"{job_id}_yt_raw.*"):
+                    f.rename(output_path)
+                    return output_path
+        except Exception as exc:
+            logger.warning("yt_subprocess_download_failed",
+                           client=pc, error=str(exc)[:150])
+            continue
+    return None
 
 
 async def _download_youtube_audio(url: str, job_id: str) -> Path:
@@ -274,6 +398,12 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
                            cookies=bool(strat.get("cookiefile")),
                            error=str(exc)[:300])
             continue
+
+    # Last resort: yt-dlp subprocess (handles bot-check challenges better)
+    logger.info("yt_download_trying_subprocess_fallback", url=url)
+    sub_result = await _download_youtube_audio_subprocess(url, job_id, output_path)
+    if sub_result:
+        return sub_result
 
     logger.error("yt_download_all_strategies_exhausted",
                  url=url, total_strategies=len(strategies),
@@ -763,7 +893,8 @@ async def _live_transcribe_loop(
         logger.error("deepgram_key_missing_for_live")
         return
 
-    # Resolve HLS URL from YouTube
+    # Resolve HLS URL from YouTube (library → subprocess fallbacks)
+    hls_url = None
     try:
         result = await _resolve_youtube(youtube_url)
         if not result["is_live"]:
@@ -774,19 +905,22 @@ async def _live_transcribe_loop(
                 )
             return
         hls_url = result.get("hls_url")
-        if not hls_url:
-            if redis:
-                await redis.publish(
-                    f"redacted_tokens:{stream_id}",
-                    json.dumps({"text": "[Could not get HLS URL from YouTube]", "is_final": True}),
-                )
-            return
     except Exception as exc:
         logger.exception("live_resolve_error", url=youtube_url)
+
+    # Fallback: yt-dlp subprocess --get-url
+    if not hls_url:
+        logger.info("live_hls_fallback_subprocess", stream_id=stream_id)
+        hls_url = await _get_stream_url_subprocess(youtube_url)
+
+    if not hls_url:
         if redis:
             await redis.publish(
                 f"redacted_tokens:{stream_id}",
-                json.dumps({"text": f"[Resolve error: {str(exc)[:100]}]", "is_final": True}),
+                json.dumps({
+                    "text": "[Could not get stream URL — cookies may have expired or the stream ended]",
+                    "is_final": True,
+                }),
             )
         return
 
@@ -1073,3 +1207,23 @@ async def get_live_status(stream_id: str) -> dict:
     task = _live_tasks.get(stream_id)
     is_running = task is not None and not task.done()
     return {"stream_id": stream_id, "is_running": is_running}
+
+
+@router.get("/diagnostics")
+async def youtube_diagnostics() -> dict:
+    """Debug endpoint — check YouTube/yt-dlp configuration on this instance."""
+    import yt_dlp
+
+    yt_dlp_version = getattr(yt_dlp.version, "__version__", "unknown")
+    ffmpeg_path = shutil.which("ffmpeg")
+
+    return {
+        "cookies_path": str(_COOKIES_FILE),
+        "cookies_exists": _COOKIES_FILE.exists(),
+        "cookies_size_bytes": _COOKIES_FILE.stat().st_size if _COOKIES_FILE.exists() else 0,
+        "yt_dlp_version": yt_dlp_version,
+        "ffmpeg_available": ffmpeg_path is not None,
+        "ffmpeg_path": ffmpeg_path,
+        "player_clients": _PLAYER_CLIENTS,
+        "active_live_tasks": list(_live_tasks.keys()),
+    }
