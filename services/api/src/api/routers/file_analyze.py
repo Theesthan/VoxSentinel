@@ -470,6 +470,35 @@ async def _run_pipeline(
                     )
             seg.keywords_matched = matched
 
+        # ── 4b. Stream transcript segments to frontend via Redis (word-by-word) ──
+        if redis and stream_id:
+            try:
+                delay = 0.03 if len(transcript_out) < 80 else 0.015
+                for seg in transcript_out:
+                    words = seg.text.split()
+                    for wi, word in enumerate(words):
+                        await redis.publish(
+                            f"redacted_tokens:{stream_id}",
+                            json.dumps({
+                                "text": word,
+                                "speaker_id": seg.speaker_id or "unknown",
+                                "is_final": wi == len(words) - 1,
+                                "is_word": True,
+                                "confidence": seg.confidence,
+                                "start_offset_ms": seg.start_offset_ms,
+                            }),
+                        )
+                        await asyncio.sleep(delay)
+                # signal end-of-transcript
+                await redis.publish(
+                    f"redacted_tokens:{stream_id}",
+                    json.dumps({"type": "complete", "text": "", "is_final": True}),
+                )
+                logger.info("file_analyze_streamed_to_redis", job_id=job_id,
+                            words_streamed=sum(len(s.text.split()) for s in transcript_out))
+            except Exception:
+                logger.warning("file_analyze_redis_stream_error", job_id=job_id)
+
         job["progress_pct"] = 95
 
         # ── 5. Build summary ──

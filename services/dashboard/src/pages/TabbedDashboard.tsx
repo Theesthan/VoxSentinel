@@ -814,6 +814,47 @@ function MicPanel({
    2. FILE ANALYZE
    ═══════════════════════════════════════════════ */
 
+/* ── Streaming transcript overlay shown during processing ── */
+function StreamingTranscript({ words }: { words: { text: string; speaker: string }[] }) {
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [words.length]);
+
+  if (words.length === 0) return (
+    <div className="p-6 border border-white/[0.06] text-center">
+      <span className="text-[10px] font-mono text-white/20 animate-pulse">Waiting for transcript…</span>
+    </div>
+  );
+
+  // Group words by speaker for nice display
+  const groups: { speaker: string; text: string }[] = [];
+  for (const w of words) {
+    const last = groups[groups.length - 1];
+    if (last && last.speaker === w.speaker) {
+      last.text += " " + w.text;
+    } else {
+      groups.push({ speaker: w.speaker, text: w.text });
+    }
+  }
+
+  return (
+    <div className="p-4 border border-white/[0.06] max-h-[380px] overflow-y-auto space-y-2">
+      <div className="flex items-center gap-2 mb-3">
+        <Activity className="w-3 h-3 text-emerald-400/60 animate-pulse" />
+        <span className="text-[10px] font-mono tracking-wider text-emerald-400/50 uppercase">
+          Live transcription
+        </span>
+      </div>
+      {groups.map((g, i) => (
+        <div key={i} className="flex gap-2">
+          <span className="text-[9px] font-mono text-white/15 w-14 shrink-0 pt-0.5">{g.speaker}</span>
+          <span className="text-[12px] text-white/60 leading-relaxed">{g.text}</span>
+        </div>
+      ))}
+      <div ref={endRef} />
+    </div>
+  );
+}
+
 function FileAnalyzePanel() {
   const [jobs, setJobs] = useState<FileAnalyzeJobSummary[]>([]);
   const [selectedJob, setSelectedJob] = useState<FileAnalyzeStatusResponse | null>(null);
@@ -825,6 +866,39 @@ function FileAnalyzePanel() {
   const [ytProcessing, setYtProcessing] = useState(false);
   const [ytError, setYtError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [streamingWords, setStreamingWords] = useState<{ text: string; speaker: string }[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  /* Connect to transcript WebSocket for live word-by-word display */
+  const startStreaming = useCallback((streamId: string) => {
+    setStreamingWords([]);
+    setIsStreaming(true);
+    if (wsRef.current) { try { wsRef.current.close(); } catch {} }
+    const ws = api.createTranscriptSocket(streamId);
+    wsRef.current = ws;
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "complete") { return; }
+        if (msg.is_word && msg.text) {
+          setStreamingWords((prev) => [...prev, { text: msg.text, speaker: msg.speaker_id || "?" }]);
+        } else if (msg.text) {
+          // Handle non-word messages (full segments from live transcription)
+          const wordList = msg.text.split(/\s+/).filter(Boolean);
+          const speaker = msg.speaker_id || msg.speaker || "?";
+          setStreamingWords((prev) => [...prev, ...wordList.map((w: string) => ({ text: w, speaker }))]);
+        }
+      } catch {}
+    };
+    ws.onerror = () => { ws.close(); };
+    ws.onclose = () => { wsRef.current = null; };
+  }, []);
+
+  const stopStreaming = useCallback(() => {
+    setIsStreaming(false);
+    if (wsRef.current) { try { wsRef.current.close(); } catch {} wsRef.current = null; }
+  }, []);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -839,6 +913,7 @@ function FileAnalyzePanel() {
     load();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      if (wsRef.current) { try { wsRef.current.close(); } catch {} }
     };
   }, [load]);
 
@@ -861,6 +936,9 @@ function FileAnalyzePanel() {
       setJobs((prev) => [newJob, ...prev]);
       setUploading(false);
 
+      // Start streaming transcript words via WebSocket
+      startStreaming(res.stream_id);
+
       // Poll until done in background
       if (pollRef.current) clearInterval(pollRef.current);
       const poll = setInterval(async () => {
@@ -869,6 +947,7 @@ function FileAnalyzePanel() {
           if (s.status === "completed" || s.status === "failed") {
             clearInterval(poll);
             pollRef.current = null;
+            stopStreaming();
             load(); // refresh full list
             setSelectedJob(s);
             if (s.status === "failed" && s.error_message) {
@@ -906,6 +985,10 @@ function FileAnalyzePanel() {
     setYtError("");
     try {
       const res = await api.youtubeDownloadAnalyze(ytUrl.trim());
+
+      // Start streaming transcript words via WebSocket
+      startStreaming(res.stream_id);
+
       // Poll until done
       if (pollRef.current) clearInterval(pollRef.current);
       const poll = setInterval(async () => {
@@ -914,6 +997,7 @@ function FileAnalyzePanel() {
           if (s.status === "completed" || s.status === "failed") {
             clearInterval(poll);
             pollRef.current = null;
+            stopStreaming();
             load();
             setSelectedJob(s);
             setYtProcessing(false);
@@ -997,6 +1081,11 @@ function FileAnalyzePanel() {
           </p>
         )}
       </div>
+
+      {/* Streaming transcript display during processing */}
+      {isStreaming && (
+        <StreamingTranscript words={streamingWords} />
+      )}
 
       {/* Job list */}
       <SectionLabel>Analysis jobs</SectionLabel>

@@ -58,6 +58,15 @@ _INVIDIOUS_INSTANCES = [
     "https://invidious.privacyredirect.com",
 ]
 
+# Piped API instances — alternative YouTube frontend; often more reliable than Invidious
+_PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.reallyaweso.me",
+    "https://api.piped.privacyredirect.com",
+    "https://pipedapi.in.projectsegfau.lt",
+]
+
 
 import re as _re
 
@@ -176,6 +185,215 @@ async def _invidious_get_stream_url(url: str) -> str | None:
                                instance=instance, error=str(exc)[:100])
                 continue
     return None
+
+
+async def _piped_get_audio_url(url: str) -> str | None:
+    """Try Piped API instances to get a direct audio stream URL for a YouTube video."""
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+        for instance in _PIPED_INSTANCES:
+            try:
+                resp = await client.get(
+                    f"{instance}/streams/{video_id}",
+                    headers={"User-Agent": "VoxSentinel/1.0"},
+                )
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                # Pick highest-bitrate audio stream
+                audio_streams = data.get("audioStreams") or []
+                best = None
+                best_bitrate = 0
+                for s in audio_streams:
+                    br = s.get("bitrate", 0) or 0
+                    if s.get("url") and br > best_bitrate:
+                        best = s["url"]
+                        best_bitrate = br
+                if best:
+                    logger.info("piped_audio_url_found", instance=instance, video_id=video_id)
+                    return best
+            except Exception as exc:
+                logger.warning("piped_instance_failed", instance=instance, error=str(exc)[:100])
+                continue
+    return None
+
+
+async def _piped_get_hls_url(url: str) -> str | None:
+    """Try Piped API instances to get an HLS URL for a live stream."""
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+        for instance in _PIPED_INSTANCES:
+            try:
+                resp = await client.get(
+                    f"{instance}/streams/{video_id}",
+                    headers={"User-Agent": "VoxSentinel/1.0"},
+                )
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                hls = data.get("hls") or data.get("hlsUrl")
+                if hls:
+                    logger.info("piped_hls_found", instance=instance, video_id=video_id)
+                    return hls
+                # Also check proxyUrl which works for some instances
+                proxy_url = data.get("proxyUrl")
+                if proxy_url:
+                    return proxy_url
+            except Exception as exc:
+                logger.warning("piped_hls_failed", instance=instance, error=str(exc)[:100])
+                continue
+    return None
+
+
+async def _download_audio_from_url(audio_url: str, job_id: str) -> Path:
+    """Download audio from a direct URL (Piped/Invidious) and convert to WAV via FFmpeg."""
+    raw_path = UPLOAD_DIR / f"{job_id}_alt_raw"
+    output_path = UPLOAD_DIR / f"{job_id}_yt_audio.wav"
+
+    # Download the raw audio
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(120.0),
+        follow_redirects=True,
+    ) as client:
+        resp = await client.get(audio_url, headers={"User-Agent": "VoxSentinel/1.0"})
+        resp.raise_for_status()
+        raw_bytes = resp.content
+
+    if len(raw_bytes) < 1000:
+        raise RuntimeError(f"Downloaded audio too small ({len(raw_bytes)} bytes)")
+
+    await asyncio.to_thread(raw_path.write_bytes, raw_bytes)
+
+    # Convert to 16kHz mono WAV via FFmpeg
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("FFmpeg not found")
+
+    cmd = [
+        ffmpeg_bin, "-y", "-i", str(raw_path),
+        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        str(output_path),
+    ]
+    proc = await asyncio.to_thread(
+        subprocess.run, cmd, capture_output=True, text=True, timeout=120,
+    )
+    # Clean up raw
+    try:
+        raw_path.unlink()
+    except Exception:
+        pass
+
+    if proc.returncode != 0 or not output_path.exists():
+        raise RuntimeError(f"FFmpeg conversion failed: {proc.stderr[:200] if proc.stderr else 'unknown'}")
+
+    logger.info("alt_api_audio_downloaded", job_id=job_id, size=output_path.stat().st_size)
+    return output_path
+
+
+async def _stream_captions_to_redis(
+    stream_id: _uuid.UUID,
+    captions: list[dict],
+    job: dict,
+    redis: Any,
+    db_factory: Any,
+    request: Request,
+) -> None:
+    """Stream youtube-transcript-api captions to Redis word-by-word for live UI display,
+    then run keyword matching and mark the job as completed."""
+    from api.schemas.file_analyze_schemas import (
+        FileAnalyzeSegment,
+        FileAnalyzeAlert,
+        FileAnalyzeSummary,
+    )
+    from api.routers.file_analyze import _utc_now
+
+    try:
+        transcript_out: list[FileAnalyzeSegment] = []
+        total = len(captions)
+
+        for idx, cap in enumerate(captions):
+            seg = FileAnalyzeSegment(
+                segment_id=_uuid.uuid4(),
+                speaker_id=None,
+                start_offset_ms=cap["start_ms"],
+                end_offset_ms=cap["end_ms"],
+                text=cap["text"],
+                confidence=1.0,
+            )
+            transcript_out.append(seg)
+
+            # Publish segment to Redis for word-by-word streaming
+            if redis and cap["text"].strip():
+                words = cap["text"].split()
+                for wi, word in enumerate(words):
+                    await redis.publish(
+                        f"redacted_tokens:{stream_id}",
+                        json.dumps({
+                            "text": word,
+                            "speaker_id": None,
+                            "is_final": wi == len(words) - 1,
+                            "is_word": True,
+                            "segment_idx": idx,
+                            "confidence": 1.0,
+                        }),
+                    )
+                    await asyncio.sleep(0.03)  # 30ms per word
+
+            # Update progress
+            job["progress_pct"] = 30 + int(50 * (idx + 1) / total)
+
+        # Keyword matching
+        keyword_rules = await _load_keyword_rules(db_factory)
+        alerts_out: list[FileAnalyzeAlert] = []
+        if keyword_rules:
+            combined = " ".join(c["text"] for c in captions)
+            matches = _match_keywords(combined, keyword_rules)
+            for m in matches:
+                alerts_out.append(FileAnalyzeAlert(
+                    alert_id=_uuid.uuid4(),
+                    alert_type="keyword",
+                    severity=m.get("severity", "medium"),
+                    matched_rule=m.get("rule_id"),
+                    match_type=m.get("match_type", "exact"),
+                    matched_text=m.get("keyword"),
+                    surrounding_context=combined[:200],
+                    timestamp_offset_ms=0,
+                ))
+
+        summary = FileAnalyzeSummary(
+            total_segments=len(transcript_out),
+            total_alerts=len(alerts_out),
+            sentiments={},
+            speakers_detected=0,
+            languages_detected=["en"],
+        )
+
+        completed = _utc_now()
+        job["status"] = "completed"
+        job["progress_pct"] = 100
+        job["completed_at"] = completed
+        job["duration_seconds"] = (completed - job["created_at"]).total_seconds()
+        job["transcript"] = transcript_out
+        job["alerts"] = alerts_out
+        job["summary"] = summary
+
+        # Signal completion on Redis
+        if redis:
+            await redis.publish(
+                f"redacted_tokens:{stream_id}",
+                json.dumps({"type": "complete", "text": "", "is_final": True}),
+            )
+
+        logger.info("yt_captions_streamed_complete", segments=len(transcript_out))
+
+    except Exception as exc:
+        logger.exception("stream_captions_error")
+        job["status"] = "failed"
+        job["error_message"] = str(exc)[:300]
 
 
 class YouTubeResolveRequest(BaseModel):
@@ -610,9 +828,10 @@ async def download_and_analyze(
 ) -> dict:
     """Download a YouTube VOD's audio and submit it for file analysis.
 
-    Strategy (in order):
-    1. youtube-transcript-api — uses YouTube's caption endpoint (works on cloud IPs)
-    2. yt-dlp audio download — requires a proxy on cloud; good quality + Deepgram ASR
+    Strategy order (Deepgram first for best quality, captions as last resort):
+    1. yt-dlp audio download → Deepgram ASR (speaker diarization, high accuracy)
+    2. Piped/Invidious audio URL → download → Deepgram ASR
+    3. youtube-transcript-api captions (last resort; no diarization, lower quality)
     Returns the job_id for polling status.
     """
     if not _is_youtube_url(body.url):
@@ -626,12 +845,6 @@ async def download_and_analyze(
         _jobs,
         _run_pipeline,
         _utc_now,
-    )
-    from api.schemas.file_analyze_schemas import (
-        FileAnalyzeSegment,
-        FileAnalyzeAlert,
-        FileAnalyzeSummary,
-        FileAnalyzeSubmitResponse,
     )
     from tg_common.db.orm_models import SessionORM, StreamORM
 
@@ -655,7 +868,7 @@ async def download_and_analyze(
         name=display_name,
         source_type="file",
         source_url=body.url,
-        asr_backend="youtube_captions",
+        asr_backend="deepgram_nova2",
         status="active",
         session_id=session_id,
         metadata_={"job_id": str(job_id), "file_name": display_name, "youtube_url": body.url},
@@ -663,7 +876,7 @@ async def download_and_analyze(
     session = SessionORM(
         session_id=session_id,
         stream_id=stream_id,
-        asr_backend_used="youtube_captions",
+        asr_backend_used="deepgram_nova2",
     )
     if db is not None:
         db.add(stream)
@@ -676,7 +889,7 @@ async def download_and_analyze(
         "stream_id": stream_id,
         "session_id": session_id,
         "status": "processing",
-        "progress_pct": 10,
+        "progress_pct": 5,
         "file_name": display_name,
         "created_at": now,
         "completed_at": None,
@@ -686,99 +899,9 @@ async def download_and_analyze(
         "summary": None,
     }
     job = _jobs[str(job_id)]
-
-    # ── Strategy 1: youtube-transcript-api (captions — works on any IP) ──
-    captions = await _get_yt_captions(body.url)
-    if captions:
-        logger.info("yt_captions_path_taken", job_id=str(job_id), segments=len(captions))
-        job["progress_pct"] = 50
-
-        # Convert captions to FileAnalyzeSegment list
-        transcript_out: list[FileAnalyzeSegment] = []
-        for cap in captions:
-            transcript_out.append(FileAnalyzeSegment(
-                segment_id=_uuid.uuid4(),
-                speaker_id=None,
-                start_offset_ms=cap["start_ms"],
-                end_offset_ms=cap["end_ms"],
-                text=cap["text"],
-                confidence=1.0,
-            ))
-
-        # Run keyword matching on combined caption text
-        db_factory = getattr(request.app.state, "db_session_factory", None)
-        keyword_rules = await _load_keyword_rules(db_factory)
-        alerts_out: list[FileAnalyzeAlert] = []
-        if keyword_rules:
-            combined = " ".join(c["text"] for c in captions)
-            matches = _match_keywords(combined, keyword_rules)
-            for m in matches:
-                alerts_out.append(FileAnalyzeAlert(
-                    alert_id=_uuid.uuid4(),
-                    alert_type="keyword",
-                    severity=m.get("severity", "medium"),
-                    matched_rule=m.get("rule_id"),
-                    match_type=m.get("match_type", "exact"),
-                    matched_text=m.get("keyword"),
-                    surrounding_context=combined[:200],
-                    timestamp_offset_ms=0,
-                ))
-
-        summary = FileAnalyzeSummary(
-            total_segments=len(transcript_out),
-            total_alerts=len(alerts_out),
-            sentiments={},
-            speakers_detected=0,
-            languages_detected=["en"],
-        )
-
-        completed = _utc_now()
-        job["status"] = "completed"
-        job["progress_pct"] = 100
-        job["completed_at"] = completed
-        job["duration_seconds"] = (completed - now).total_seconds()
-        job["transcript"] = transcript_out
-        job["alerts"] = alerts_out
-        job["summary"] = summary
-
-        return {
-            "job_id": str(job_id),
-            "stream_id": str(stream_id),
-            "session_id": str(session_id),
-            "status": "processing",
-            "file_name": display_name,
-            "created_at": now.isoformat(),
-        }
-
-    # ── Strategy 2: yt-dlp audio download + Deepgram (requires proxy on cloud) ──
-    logger.info("yt_captions_unavailable_trying_download", job_id=str(job_id))
-    job["progress_pct"] = 20
-    try:
-        audio_path = await _download_youtube_audio(body.url, str(job_id))
-    except Exception as exc:
-        job["status"] = "failed"
-        job["error_message"] = (
-            f"YouTube captions are not available for this video, and audio download "
-            f"also failed (likely blocked on cloud): {str(exc)[:200]}"
-        )
-        logger.error("youtube_both_strategies_failed", url=body.url, error=str(exc)[:200])
-        raise HTTPException(
-            status_code=500,
-            detail=job["error_message"],
-        )
-
-    # Audio downloaded — run through Deepgram pipeline
-    job["progress_pct"] = 40
     db_factory = getattr(request.app.state, "db_session_factory", None)
-    asyncio.create_task(
-        _run_pipeline(
-            str(job_id), audio_path, stream_id, session_id,
-            "deepgram_nova2", redis,
-            db_session_factory=db_factory,
-        ),
-    )
 
-    return {
+    _make_response = lambda: {
         "job_id": str(job_id),
         "stream_id": str(stream_id),
         "session_id": str(session_id),
@@ -786,6 +909,75 @@ async def download_and_analyze(
         "file_name": display_name,
         "created_at": now.isoformat(),
     }
+
+    # ── Strategy 1: yt-dlp audio download → Deepgram (best quality) ──
+    audio_path: Path | None = None
+    try:
+        job["progress_pct"] = 10
+        audio_path = await _download_youtube_audio(body.url, str(job_id))
+        logger.info("yt_download_success_deepgram_path", job_id=str(job_id))
+    except Exception as exc:
+        logger.warning("yt_download_failed_trying_alt_apis",
+                       job_id=str(job_id), error=str(exc)[:200])
+
+    if audio_path:
+        job["progress_pct"] = 40
+        asyncio.create_task(
+            _run_pipeline(
+                str(job_id), audio_path, stream_id, session_id,
+                "deepgram_nova2", redis,
+                db_session_factory=db_factory,
+            ),
+        )
+        return _make_response()
+
+    # ── Strategy 2: Piped / Invidious audio URL → download → Deepgram ──
+    job["progress_pct"] = 20
+    logger.info("yt_trying_piped_invidious", job_id=str(job_id))
+    audio_url = await _piped_get_audio_url(body.url)
+    if not audio_url:
+        audio_url = await _invidious_get_stream_url(body.url)
+
+    if audio_url:
+        try:
+            audio_path = await _download_audio_from_url(audio_url, str(job_id))
+            logger.info("alt_api_download_success", job_id=str(job_id))
+            job["progress_pct"] = 40
+            asyncio.create_task(
+                _run_pipeline(
+                    str(job_id), audio_path, stream_id, session_id,
+                    "deepgram_nova2", redis,
+                    db_session_factory=db_factory,
+                ),
+            )
+            return _make_response()
+        except Exception as exc:
+            logger.warning("alt_api_download_failed",
+                           job_id=str(job_id), error=str(exc)[:200])
+
+    # ── Strategy 3 (last resort): youtube-transcript-api captions ──
+    job["progress_pct"] = 25
+    logger.info("yt_trying_captions_last_resort", job_id=str(job_id))
+    captions = await _get_yt_captions(body.url)
+    if captions:
+        logger.info("yt_captions_path_taken", job_id=str(job_id), segments=len(captions))
+        # Stream captions word-by-word in background task
+        asyncio.create_task(
+            _stream_captions_to_redis(
+                stream_id, captions, job, redis, db_factory, request,
+            ),
+        )
+        return _make_response()
+
+    # ── All strategies exhausted ──
+    job["status"] = "failed"
+    job["error_message"] = (
+        "Could not transcribe this YouTube video. "
+        "Audio download was blocked by YouTube (datacenter IP), "
+        "Piped/Invidious APIs did not return audio, and no captions were available."
+    )
+    logger.error("youtube_all_strategies_failed", url=body.url)
+    raise HTTPException(status_code=500, detail=job["error_message"])
 
 
 # ────────────────────────────────────────────────────────
@@ -1146,6 +1338,11 @@ async def _live_transcribe_loop(
     if not hls_url:
         logger.info("live_hls_fallback_invidious", stream_id=stream_id)
         hls_url = await _invidious_get_stream_url(youtube_url)
+
+    # Fallback: Piped API (another free YouTube frontend, often more reliable)
+    if not hls_url:
+        logger.info("live_hls_fallback_piped", stream_id=stream_id)
+        hls_url = await _piped_get_hls_url(youtube_url)
 
     if not hls_url:
         err_msg = (
