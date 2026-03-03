@@ -278,6 +278,39 @@ export const updateRule = (id: string, body: Partial<RuleCreateRequest>) =>
 export const deleteRule = (id: string) =>
   apiFetch<void>(`/rules/${id}`, { method: "DELETE" });
 
+export async function exportRules(): Promise<void> {
+  const key = getApiKey();
+  const res = await fetch(`${BASE}/rules/export`, {
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "voxsentinel_rules.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function importRules(file: File): Promise<{ created: number; skipped: number }> {
+  const key = getApiKey();
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE}/rules/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text);
+  }
+  return res.json();
+}
+
 // ── Alerts ──
 
 export const listAlerts = (params?: {
@@ -451,6 +484,26 @@ export const listFileAnalyzeJobs = (params?: { status?: string; limit?: number }
   const qs = q.toString();
   return apiFetch<FileAnalyzeListResponse>(`/file-analyze${qs ? `?${qs}` : ""}`);
 };
+
+// ── AI Keyword Suggestion ──
+
+export interface SuggestedKeyword {
+  keyword: string;
+  severity: string;
+  reason: string;
+  category: string;
+  match_type: string;
+}
+
+export interface SuggestKeywordsResponse {
+  job_id: string;
+  suggestions: SuggestedKeyword[];
+}
+
+export const suggestKeywords = (jobId: string) =>
+  apiFetch<SuggestKeywordsResponse>(`/file-analyze/${jobId}/suggest-keywords`, {
+    method: "POST",
+  });
 
 // ── WebSocket helpers ──
 

@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
 from api.dependencies import get_db_session, get_redis
 from api.schemas.file_analyze_schemas import (
@@ -776,3 +777,118 @@ async def list_jobs(
         for j in all_jobs
     ]
     return FileAnalyzeListResponse(jobs=summaries, total=len(summaries))
+
+
+# ────────────────────────────────────────────────────────
+# AI Keyword Suggestion (Groq Llama 3.3 70B)
+# ────────────────────────────────────────────────────────
+
+class _SuggestedKeyword(BaseModel):
+    keyword: str
+    severity: str = "medium"
+    reason: str = ""
+    category: str = "general"
+    match_type: str = "exact"
+
+
+class SuggestKeywordsResponse(BaseModel):
+    job_id: str
+    suggestions: list[_SuggestedKeyword]
+
+
+@router.post("/{job_id}/suggest-keywords", response_model=SuggestKeywordsResponse)
+async def suggest_keywords(job_id: _uuid.UUID) -> SuggestKeywordsResponse:
+    """Use Groq LLM (Llama 3.3 70B) to extract keyword suggestions from a
+    completed transcript.  Returns keywords with severity and reason so the
+    user can click to add them as rules.
+    """
+    job = _jobs.get(str(job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Job not completed yet")
+
+    transcript: list[FileAnalyzeSegment] = job.get("transcript", [])
+    if not transcript:
+        return SuggestKeywordsResponse(job_id=str(job_id), suggestions=[])
+
+    # Build transcript text for the LLM (cap at ~6000 chars to stay within context)
+    full_text = "\n".join(
+        f"[{seg.speaker_id or '?'}] {seg.text}" for seg in transcript
+    )
+    if len(full_text) > 6000:
+        full_text = full_text[:6000] + "\n... (truncated)"
+
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if not groq_key:
+        raise HTTPException(
+            status_code=503,
+            detail="GROQ_API_KEY not configured — cannot suggest keywords",
+        )
+
+    prompt = (
+        "You are an expert analyst. Given the following transcript, extract "
+        "the most important and notable keywords/phrases that would be useful "
+        "for monitoring and alerting. For each keyword, assign:\n"
+        "- severity: low, medium, high, or critical\n"
+        "- category: e.g. security, compliance, legislation, finance, general, "
+        "  medical, profanity, threat, sentiment, topic\n"
+        "- match_type: 'exact' for specific terms, 'fuzzy' for concepts that "
+        "  might appear in varied forms, 'regex' only if a pattern is needed\n"
+        "- reason: brief explanation of why this keyword matters\n\n"
+        "Return ONLY valid JSON — an array of objects with keys: "
+        "keyword, severity, category, match_type, reason.\n"
+        "Return 5-15 keywords. Focus on domain-specific, actionable terms.\n\n"
+        f"TRANSCRIPT:\n{full_text}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 2000,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.exception("groq_suggest_keywords_error")
+        raise HTTPException(status_code=502, detail=f"Groq API error: {str(exc)[:200]}")
+
+    # Parse LLM response
+    try:
+        content = data["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        # Handle both {"keywords": [...]} and direct [...]
+        items = parsed if isinstance(parsed, list) else parsed.get("keywords", parsed.get("suggestions", []))
+        suggestions = []
+        for item in items:
+            if isinstance(item, dict) and "keyword" in item:
+                sev = item.get("severity", "medium").lower()
+                if sev not in ("low", "medium", "high", "critical"):
+                    sev = "medium"
+                mt = item.get("match_type", "exact").lower()
+                if mt not in ("exact", "fuzzy", "regex"):
+                    mt = "exact"
+                suggestions.append(_SuggestedKeyword(
+                    keyword=item["keyword"],
+                    severity=sev,
+                    reason=item.get("reason", ""),
+                    category=item.get("category", "general"),
+                    match_type=mt,
+                ))
+    except Exception:
+        logger.warning("groq_response_parse_error", content=str(data)[:300])
+        return SuggestKeywordsResponse(job_id=str(job_id), suggestions=[])
+
+    logger.info("suggest_keywords_success", job_id=str(job_id), count=len(suggestions))
+    return SuggestKeywordsResponse(job_id=str(job_id), suggestions=suggestions)

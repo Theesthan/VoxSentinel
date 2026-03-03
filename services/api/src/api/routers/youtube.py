@@ -49,6 +49,101 @@ if _PROXY:
 else:
     logger.warning("youtube_no_proxy", hint="Set YT_DLP_PROXY env var for reliable YouTube on cloud")
 
+# ── YouTube Media Worker delegation ──
+# Set YT_WORKER_URL to delegate yt-dlp/FFmpeg ops to an external machine.
+# e.g. "http://your-home-ip:8787" or "https://your-vps.example.com:8787"
+# If not set, all operations run locally (current behavior, backward-compatible).
+_WORKER_URL: str | None = os.getenv("YT_WORKER_URL") or None
+_WORKER_SECRET: str | None = os.getenv("YT_WORKER_SECRET") or None
+if _WORKER_URL:
+    logger.info("youtube_worker_configured", url=_WORKER_URL[:50])
+else:
+    logger.info("youtube_worker_not_configured", hint="Set YT_WORKER_URL to delegate to external yt-dlp worker")
+
+
+async def _worker_resolve(url: str) -> dict | None:
+    """Delegate YouTube URL resolution to the remote worker."""
+    if not _WORKER_URL:
+        return None
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if _WORKER_SECRET:
+        headers["Authorization"] = f"Bearer {_WORKER_SECRET}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            resp = await client.post(
+                f"{_WORKER_URL}/worker/resolve",
+                headers=headers,
+                json={"url": url},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("error"):
+                logger.warning("worker_resolve_error", error=data["error"])
+                return None
+            return {
+                "is_live": data.get("is_live", False),
+                "title": data.get("title", "Unknown"),
+                "hls_url": data.get("hls_url"),
+                "formats": [],
+                "info": {},
+            }
+    except Exception as exc:
+        logger.warning("worker_resolve_failed", error=str(exc)[:200])
+        return None
+
+
+async def _worker_download_audio(url: str, job_id: str) -> Path | None:
+    """Delegate audio download to the remote worker.  Returns local path to WAV."""
+    if not _WORKER_URL:
+        return None
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if _WORKER_SECRET:
+        headers["Authorization"] = f"Bearer {_WORKER_SECRET}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+            resp = await client.post(
+                f"{_WORKER_URL}/worker/download-audio",
+                headers=headers,
+                json={"url": url, "job_id": job_id},
+            )
+            resp.raise_for_status()
+            audio_bytes = resp.content
+            if len(audio_bytes) < 1000:
+                logger.warning("worker_download_too_small", size=len(audio_bytes))
+                return None
+            output_path = UPLOAD_DIR / f"{job_id}_worker_audio.wav"
+            output_path.write_bytes(audio_bytes)
+            logger.info("worker_download_success", job_id=job_id, size=len(audio_bytes))
+            return output_path
+    except Exception as exc:
+        logger.warning("worker_download_failed", error=str(exc)[:200])
+        return None
+
+
+async def _worker_capture_chunk(hls_url: str, duration: int, stream_id: str) -> bytes | None:
+    """Delegate HLS chunk capture to the remote worker.  Returns WAV bytes."""
+    if not _WORKER_URL:
+        return None
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if _WORKER_SECRET:
+        headers["Authorization"] = f"Bearer {_WORKER_SECRET}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(float(duration + 60))) as client:
+            resp = await client.post(
+                f"{_WORKER_URL}/worker/capture-chunk",
+                headers=headers,
+                json={"hls_url": hls_url, "duration": duration, "stream_id": stream_id},
+            )
+            resp.raise_for_status()
+            audio_bytes = resp.content
+            if len(audio_bytes) < 100:
+                return None
+            return audio_bytes
+    except Exception as exc:
+        logger.warning("worker_capture_chunk_failed", error=str(exc)[:200])
+        return None
+
+
 # Public Invidious instances — used as fallback for live stream HLS URL
 _INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
@@ -419,10 +514,16 @@ async def _resolve_youtube(url: str) -> dict:
     """Use yt-dlp to extract info about a YouTube URL.
 
     Returns a dict with keys: is_live, title, hls_url (if live).
-    Falls back to HTTP scraping if yt-dlp fails (e.g. bot detection).
+    Tries remote worker first if YT_WORKER_URL is configured.
+    Falls back to local yt-dlp, then HTTP scraping.
     """
     import re as _re
 
+    # --- Try remote worker first (if configured) ---
+    worker_result = await _worker_resolve(url)
+    if worker_result is not None:
+        logger.info("youtube_resolved_via_worker", title=worker_result["title"][:50])
+        return worker_result
     import httpx
 
     # --- Try yt-dlp first (multiple strategies) ---
@@ -694,10 +795,18 @@ async def _download_youtube_audio_subprocess(
 async def _download_youtube_audio(url: str, job_id: str) -> Path:
     """Download audio from a YouTube VOD using yt-dlp + FFmpeg.
 
-    Tries multiple player-client strategies to work around YouTube's
-    format restrictions on cloud/datacenter IPs.  Returns path to the
-    downloaded WAV file.
+    Tries remote worker first if YT_WORKER_URL is configured.
+    Then falls back to multiple local player-client strategies to work around
+    YouTube's format restrictions on cloud/datacenter IPs.
+    Returns path to the downloaded WAV file.
     """
+
+    # --- Try remote worker first (if configured) ---
+    worker_path = await _worker_download_audio(url, job_id)
+    if worker_path is not None:
+        logger.info("yt_download_via_worker_success", job_id=job_id)
+        return worker_path
+
     import yt_dlp
 
     output_path = UPLOAD_DIR / f"{job_id}_yt_audio.wav"
@@ -1348,7 +1457,8 @@ async def _live_transcribe_loop(
         err_msg = (
             "[Could not get YouTube stream URL. "
             "This is an IP-level block by YouTube on cloud servers. "
-            "Set YT_DLP_PROXY to a residential proxy in Railway env vars.]"
+            "Set YT_WORKER_URL to delegate to an external yt-dlp worker, "
+            "or set YT_DLP_PROXY to a residential proxy in Railway env vars.]"
         )
         if redis:
             await redis.publish(
@@ -1374,43 +1484,52 @@ async def _live_transcribe_loop(
 
             chunk_path = UPLOAD_DIR / f"live_{stream_id}_{chunk_counter}.wav"
             try:
-                # Use FFmpeg to capture a chunk of audio from the HLS stream
-                # If a proxy is configured, route FFmpeg through it too
-                ffmpeg_env = os.environ.copy()
-                if _PROXY:
-                    ffmpeg_env["http_proxy"] = _PROXY
-                    ffmpeg_env["https_proxy"] = _PROXY
+                audio_data: bytes | None = None
 
-                cmd = [
-                    ffmpeg_bin,
-                    "-y",
-                    "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n",
-                    "-i", hls_url,
-                    "-t", str(chunk_duration),
-                    "-vn",
-                    "-acodec", "pcm_s16le",
-                    "-ar", "16000",
-                    "-ac", "1",
-                    str(chunk_path),
-                ]
+                # --- Try remote worker for chunk capture first ---
+                if _WORKER_URL:
+                    worker_bytes = await _worker_capture_chunk(hls_url, chunk_duration, stream_id)
+                    if worker_bytes and len(worker_bytes) > 100:
+                        audio_data = worker_bytes
+                        logger.info("live_chunk_via_worker", stream_id=stream_id, chunk=chunk_counter)
 
-                proc = await asyncio.to_thread(
-                    subprocess.run, cmd, capture_output=True, text=True,
-                    timeout=chunk_duration + 30,
-                    env=ffmpeg_env,
-                )
+                # --- Fallback: local FFmpeg ---
+                if audio_data is None:
+                    ffmpeg_env = os.environ.copy()
+                    if _PROXY:
+                        ffmpeg_env["http_proxy"] = _PROXY
+                        ffmpeg_env["https_proxy"] = _PROXY
 
-                if proc.returncode != 0 or not chunk_path.exists() or chunk_path.stat().st_size == 0:
-                    logger.warning("live_chunk_capture_failed",
-                                   rc=proc.returncode, stderr=proc.stderr[:200] if proc.stderr else "")
-                    # Brief pause before retry
-                    await asyncio.sleep(2)
-                    chunk_counter += 1
-                    continue
+                    cmd = [
+                        ffmpeg_bin,
+                        "-y",
+                        "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n",
+                        "-i", hls_url,
+                        "-t", str(chunk_duration),
+                        "-vn",
+                        "-acodec", "pcm_s16le",
+                        "-ar", "16000",
+                        "-ac", "1",
+                        str(chunk_path),
+                    ]
+
+                    proc = await asyncio.to_thread(
+                        subprocess.run, cmd, capture_output=True, text=True,
+                        timeout=chunk_duration + 30,
+                        env=ffmpeg_env,
+                    )
+
+                    if proc.returncode != 0 or not chunk_path.exists() or chunk_path.stat().st_size == 0:
+                        logger.warning("live_chunk_capture_failed",
+                                       rc=proc.returncode, stderr=proc.stderr[:200] if proc.stderr else "")
+                        # Brief pause before retry
+                        await asyncio.sleep(2)
+                        chunk_counter += 1
+                        continue
+
+                    audio_data = await asyncio.to_thread(chunk_path.read_bytes)
 
                 # Send chunk to Deepgram pre-recorded API
-                audio_data = await asyncio.to_thread(chunk_path.read_bytes)
-
                 async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
                     resp = await client.post(
                         "https://api.deepgram.com/v1/listen",

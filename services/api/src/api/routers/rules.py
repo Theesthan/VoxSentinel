@@ -7,10 +7,13 @@ detection rules with hot-reload support (changes effective within 5 s).
 
 from __future__ import annotations
 
+import json
 import uuid as _uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import structlog
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import JSONResponse
 
 from api.dependencies import get_db_session, get_redis
 from api.schemas.rule_schemas import (
@@ -22,6 +25,8 @@ from api.schemas.rule_schemas import (
 )
 
 from tg_common.db.orm_models import KeywordRuleORM
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/rules", tags=["rules"])
 
@@ -168,3 +173,95 @@ async def delete_rule(
     await db.commit()
 
     await _publish_rules_updated(redis)
+
+
+# ────────────────────────────────────────────────────────
+# Export / Import
+# ────────────────────────────────────────────────────────
+
+@router.get("/export")
+async def export_rules(db: Any = Depends(get_db_session)) -> JSONResponse:
+    """Download all keyword rules as a JSON file."""
+    if db is None:
+        return JSONResponse(content={"rules": []}, headers={
+            "Content-Disposition": 'attachment; filename="voxsentinel_rules.json"',
+        })
+
+    from sqlalchemy import select
+
+    result = await db.execute(select(KeywordRuleORM))
+    rows = result.scalars().all()
+
+    rules_data = [
+        {
+            "rule_set_name": r.rule_set_name,
+            "keyword": r.keyword,
+            "match_type": r.match_type,
+            "fuzzy_threshold": r.fuzzy_threshold,
+            "severity": r.severity,
+            "category": r.category,
+            "language": r.language,
+            "enabled": r.enabled,
+        }
+        for r in rows
+    ]
+
+    return JSONResponse(
+        content={"rules": rules_data, "version": 1, "total": len(rules_data)},
+        headers={
+            "Content-Disposition": 'attachment; filename="voxsentinel_rules.json"',
+        },
+    )
+
+
+@router.post("/import", status_code=201)
+async def import_rules(
+    file: UploadFile = File(...),
+    db: Any = Depends(get_db_session),
+    redis: Any = Depends(get_redis),
+) -> dict:
+    """Import keyword rules from a JSON file.  Expects the same format
+    produced by ``GET /rules/export``.
+    """
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    raw = await file.read()
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON file")
+
+    rules_list = payload if isinstance(payload, list) else payload.get("rules", [])
+    if not isinstance(rules_list, list):
+        raise HTTPException(status_code=400, detail="Expected a JSON array of rules (or {\"rules\": [...]})")
+
+    created = 0
+    skipped = 0
+    for item in rules_list:
+        if not isinstance(item, dict) or "keyword" not in item:
+            skipped += 1
+            continue
+        try:
+            rule = KeywordRuleORM(
+                rule_id=_uuid.uuid4(),
+                rule_set_name=item.get("rule_set_name", "imported"),
+                keyword=item["keyword"],
+                match_type=item.get("match_type", "exact"),
+                fuzzy_threshold=item.get("fuzzy_threshold", 0.8),
+                severity=item.get("severity", "medium"),
+                category=item.get("category", "general"),
+                language=item.get("language"),
+                enabled=item.get("enabled", True),
+            )
+            db.add(rule)
+            created += 1
+        except Exception:
+            skipped += 1
+            logger.warning("import_rule_skip", item=item)
+
+    await db.commit()
+    await _publish_rules_updated(redis)
+
+    logger.info("rules_imported", created=created, skipped=skipped)
+    return {"created": created, "skipped": skipped}

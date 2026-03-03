@@ -17,6 +17,10 @@ import {
   Bell,
   Activity,
   Home,
+  Download,
+  Sparkles,
+  Check,
+  Loader2,
 } from "lucide-react";
 import * as api from "../lib/api";
 import type {
@@ -27,6 +31,7 @@ import type {
   FileAnalyzeStatusResponse,
   FileAnalyzeJobSummary,
   TranscriptSegment,
+  SuggestedKeyword,
 } from "../lib/api";
 
 /* ═══════════════════════════════════════════════
@@ -1153,7 +1158,39 @@ function FileJobDetail({
   job: FileAnalyzeStatusResponse;
   onClose: () => void;
 }) {
-  const [showTab, setShowTab] = useState<"transcript" | "alerts" | "summary">("transcript");
+  const [showTab, setShowTab] = useState<"transcript" | "alerts" | "summary" | "suggested">("transcript");
+  const [suggestions, setSuggestions] = useState<SuggestedKeyword[]>([]);
+  const [sugLoading, setSugLoading] = useState(false);
+  const [sugError, setSugError] = useState("");
+  const [addedKeywords, setAddedKeywords] = useState<Set<string>>(new Set());
+
+  const loadSuggestions = useCallback(() => {
+    setSugLoading(true);
+    setSugError("");
+    api
+      .suggestKeywords(job.job_id)
+      .then((r) => setSuggestions(r.suggestions))
+      .catch((e) => setSugError(e.message ?? "Failed to load suggestions"))
+      .finally(() => setSugLoading(false));
+  }, [job.job_id]);
+
+  const addAsRule = useCallback(
+    async (kw: SuggestedKeyword) => {
+      try {
+        await api.createRule({
+          keyword: kw.keyword,
+          rule_set_name: "ai-suggested",
+          match_type: kw.match_type,
+          severity: kw.severity,
+          category: kw.category,
+        });
+        setAddedKeywords((prev) => new Set(prev).add(kw.keyword));
+      } catch {
+        // ignore
+      }
+    },
+    [],
+  );
 
   return (
     <div className="border border-white/[0.06] p-6 space-y-6">
@@ -1166,15 +1203,20 @@ function FileJobDetail({
 
       {/* Sub-tabs */}
       <div className="flex items-center gap-4 border-b border-white/[0.06] pb-2">
-        {(["transcript", "alerts", "summary"] as const).map((t) => (
+        {(["transcript", "alerts", "summary", "suggested"] as const).map((t) => (
           <button
             key={t}
-            onClick={() => setShowTab(t)}
+            onClick={() => {
+              setShowTab(t);
+              if (t === "suggested" && suggestions.length === 0 && !sugLoading) loadSuggestions();
+            }}
             className={`text-[10px] font-mono tracking-[0.15em] uppercase pb-1 transition-colors ${
               showTab === t ? "text-white border-b border-white/30" : "text-white/20 hover:text-white/40"
             }`}
           >
-            {t}
+            {t === "suggested" ? (
+              <span className="inline-flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI Keywords</span>
+            ) : t}
           </button>
         ))}
       </div>
@@ -1239,6 +1281,68 @@ function FileJobDetail({
           {Object.entries(job.summary.sentiments).map(([k, v]) => (
             <MiniStat key={k} label={k} value={String(v)} />
           ))}
+        </div>
+      )}
+
+      {showTab === "suggested" && (
+        <div className="space-y-4">
+          {sugLoading ? (
+            <div className="flex items-center gap-2 text-white/30 text-[12px]">
+              <Loader2 className="w-4 h-4 animate-spin" /> Analyzing transcript with AI…
+            </div>
+          ) : sugError ? (
+            <div className="space-y-2">
+              <p className="text-[12px] text-red-400/60">{sugError}</p>
+              <button
+                onClick={loadSuggestions}
+                className="text-[10px] font-mono text-white/30 hover:text-white/50 underline"
+              >
+                Retry
+              </button>
+            </div>
+          ) : suggestions.length === 0 ? (
+            <EmptyState text="No keyword suggestions — click the tab to analyze" />
+          ) : (
+            <>
+              <p className="text-[10px] font-mono text-white/20 tracking-[0.1em] uppercase">
+                Click a keyword to add it as a rule
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {suggestions.map((kw) => {
+                  const added = addedKeywords.has(kw.keyword);
+                  return (
+                    <button
+                      key={kw.keyword}
+                      onClick={() => !added && addAsRule(kw)}
+                      disabled={added}
+                      title={kw.reason}
+                      className={`group relative inline-flex items-center gap-1.5 px-3 py-1.5 border text-[11px] font-medium transition-all ${
+                        added
+                          ? "border-green-500/30 text-green-400/60 cursor-default"
+                          : `border-white/10 hover:border-white/20 hover:bg-white/[0.04] ${severityColor(kw.severity)}`
+                      }`}
+                    >
+                      {added ? (
+                        <Check className="w-3 h-3" />
+                      ) : (
+                        <Plus className="w-3 h-3 opacity-40 group-hover:opacity-80" />
+                      )}
+                      {kw.keyword}
+                      <span className={`ml-1 text-[9px] font-mono opacity-50 ${severityColor(kw.severity)}`}>
+                        {kw.severity}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                onClick={loadSuggestions}
+                className="inline-flex items-center gap-1.5 text-[10px] font-mono text-white/20 hover:text-white/40 transition-colors"
+              >
+                <RefreshCw className="w-3 h-3" /> Re-analyze
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -1373,6 +1477,8 @@ function RulesSubPanel() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [importStatus, setImportStatus] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1387,14 +1493,51 @@ function RulesSubPanel() {
     load();
   }, [load]);
 
+  const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportStatus("Importing…");
+    try {
+      const result = await api.importRules(file);
+      setImportStatus(`Imported ${result.created} rules (${result.skipped} skipped)`);
+      load();
+    } catch {
+      setImportStatus("Import failed");
+    }
+    // Reset file input so the same file can be re-imported
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setTimeout(() => setImportStatus(""), 4000);
+  }, [load]);
+
   return (
     <div className="space-y-6">
-      <button
-        onClick={() => setShowCreate((v) => !v)}
-        className="inline-flex items-center gap-2 px-4 py-2 border border-white/10 text-[10px] font-mono tracking-[0.15em] uppercase hover:bg-white/[0.04] transition-colors"
-      >
-        <Plus className="w-3 h-3" /> New Rule
-      </button>
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          onClick={() => setShowCreate((v) => !v)}
+          className="inline-flex items-center gap-2 px-4 py-2 border border-white/10 text-[10px] font-mono tracking-[0.15em] uppercase hover:bg-white/[0.04] transition-colors"
+        >
+          <Plus className="w-3 h-3" /> New Rule
+        </button>
+        <button
+          onClick={() => api.exportRules()}
+          className="inline-flex items-center gap-2 px-4 py-2 border border-white/10 text-[10px] font-mono tracking-[0.15em] uppercase hover:bg-white/[0.04] transition-colors"
+        >
+          <Download className="w-3 h-3" /> Export
+        </button>
+        <label className="inline-flex items-center gap-2 px-4 py-2 border border-white/10 text-[10px] font-mono tracking-[0.15em] uppercase hover:bg-white/[0.04] transition-colors cursor-pointer">
+          <Upload className="w-3 h-3" /> Import
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImport}
+          />
+        </label>
+        {importStatus && (
+          <span className="text-[10px] font-mono text-white/40">{importStatus}</span>
+        )}
+      </div>
 
       <AnimatePresence>
         {showCreate && (
