@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir -e packages/tg-common && \
         "deepgram-sdk>=3.0" \
         pyahocorasick \
         rapidfuzz && \
-    pip install --no-cache-dir --upgrade yt-dlp
+    pip install --no-cache-dir --upgrade yt-dlp youtube-transcript-api
 
 # ── Port ──────────────────────────────────────────────────────────────────────
 # Railway injects $PORT at runtime; we default to 8010 for local docker runs.
