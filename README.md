@@ -8,7 +8,7 @@ A low-latency, pluggable platform that ingests live audio/video streams and uplo
 
 <div align="center">
 
-[![VoxSentinel Demo](docs/demo-thumbnail.jpg)](https://github.com/Theesthan/VoxSentinel/releases/download/v1.0.0/voxsentinel-demo.mp4)
+[![VoxSentinel Demo](https://github.com/user-attachments/assets/469efaa0-1107-4b6e-b91f-335bbc6c3d81)
 
 **▶ Click to watch the full demo (5 min 30 sec)**
 
