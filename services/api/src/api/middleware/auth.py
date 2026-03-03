@@ -25,8 +25,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.url.path
 
-        # Allow health, docs, and WebSocket upgrade through without auth.
-        if path in _PUBLIC_PATHS or path.startswith("/ws/"):
+        # Allow health, docs, WebSocket, and diagnostics through without auth.
+        if (
+            path in _PUBLIC_PATHS
+            or path.startswith("/ws/")
+            or path.endswith("/diagnostics")
+        ):
             return await call_next(request)
 
         api_key = os.environ.get("TG_API_KEY", "").strip()

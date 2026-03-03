@@ -41,6 +41,14 @@ if _deno_bin.is_dir() and str(_deno_bin) not in os.environ.get("PATH", ""):
 # Track active live transcription tasks so they can be stopped
 _live_tasks: dict[str, asyncio.Task] = {}
 
+# Proxy for yt-dlp — set YT_DLP_PROXY on Railway to bypass datacenter IP blocks.
+# Accepts HTTP/HTTPS/SOCKS5 e.g. "socks5://user:pass@host:port" or "http://host:port"
+_PROXY: str | None = os.getenv("YT_DLP_PROXY") or os.getenv("TG_YT_PROXY") or None
+if _PROXY:
+    logger.info("youtube_proxy_configured", proxy=_PROXY[:30] + "...")
+else:
+    logger.warning("youtube_no_proxy", hint="Set YT_DLP_PROXY env var for reliable YouTube on cloud")
+
 
 class YouTubeResolveRequest(BaseModel):
     url: str = Field(..., description="YouTube video or live stream URL")
@@ -178,9 +186,9 @@ def _base_opts(*, skip_download: bool = False) -> dict[str, Any]:
         "no_warnings": True,
         "geo_bypass": True,
         "nocheckcertificate": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
+        "socket_timeout": 45,
+        "retries": 5,
+        "fragment_retries": 5,
         "skip_download": skip_download,
         "http_headers": {
             "User-Agent": (
@@ -192,6 +200,8 @@ def _base_opts(*, skip_download: bool = False) -> dict[str, Any]:
     }
     if _COOKIES_FILE.exists():
         opts["cookiefile"] = str(_COOKIES_FILE)
+    if _PROXY:
+        opts["proxy"] = _PROXY
     return opts
 
 
@@ -224,6 +234,13 @@ def _subprocess_cookie_args() -> list[str]:
     return []
 
 
+def _subprocess_proxy_args() -> list[str]:
+    """Return ["--proxy", url] if proxy is configured, else []."""
+    if _PROXY:
+        return ["--proxy", _PROXY]
+    return []
+
+
 async def _yt_dlp_subprocess_extract(url: str) -> dict | None:
     """Try yt-dlp as a subprocess — often bypasses library limitations on cloud."""
     for pc in _PLAYER_CLIENTS:
@@ -236,6 +253,7 @@ async def _yt_dlp_subprocess_extract(url: str) -> dict | None:
             "--extractor-args", f"youtube:player_client={','.join(pc)}",
             "-f", "bestaudio/best",
             *_subprocess_cookie_args(),
+            *_subprocess_proxy_args(),
             url,
         ]
         try:
@@ -264,6 +282,7 @@ async def _get_stream_url_subprocess(url: str) -> str | None:
             "--extractor-args", f"youtube:player_client={','.join(pc)}",
             "-f", "bestaudio/best",
             *_subprocess_cookie_args(),
+            *_subprocess_proxy_args(),
             url,
         ]
         try:
@@ -303,6 +322,7 @@ async def _download_youtube_audio_subprocess(
             "--audio-format", "wav",
             "-o", outtmpl,
             *_subprocess_cookie_args(),
+            *_subprocess_proxy_args(),
             url,
         ]
         try:
@@ -348,8 +368,8 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
         ],
     }
 
-    # Build strategies: each player-client × two format selectors, then bare
-    format_selectors = ["bestaudio/best", "best"]
+    # Build strategies: each player-client × three format selectors, then bare
+    format_selectors = ["bestaudio/best", "bestaudio*", "best"]
     strategies: list[dict[str, Any]] = []
     for pc in _PLAYER_CLIENTS:
         for fmt in format_selectors:
@@ -358,10 +378,10 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
                 "format": fmt,
                 "extractor_args": {"youtube": {"player_client": pc}},
             })
-    # bare fallback (default client) with both format selectors
+    # bare fallback (default client) with all format selectors
     for fmt in format_selectors:
         strategies.append({**dl_base, "format": fmt})
-    # absolute last resort: no format key at all
+    # absolute last resort: no format key at all (downloads whatever is available)
     strategies.append({k: v for k, v in dl_base.items() if k != "format"})
 
     last_err: Exception | None = None
@@ -942,9 +962,16 @@ async def _live_transcribe_loop(
             chunk_path = UPLOAD_DIR / f"live_{stream_id}_{chunk_counter}.wav"
             try:
                 # Use FFmpeg to capture a chunk of audio from the HLS stream
+                # If a proxy is configured, route FFmpeg through it too
+                ffmpeg_env = os.environ.copy()
+                if _PROXY:
+                    ffmpeg_env["http_proxy"] = _PROXY
+                    ffmpeg_env["https_proxy"] = _PROXY
+
                 cmd = [
                     ffmpeg_bin,
                     "-y",
+                    "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n",
                     "-i", hls_url,
                     "-t", str(chunk_duration),
                     "-vn",
@@ -957,6 +984,7 @@ async def _live_transcribe_loop(
                 proc = await asyncio.to_thread(
                     subprocess.run, cmd, capture_output=True, text=True,
                     timeout=chunk_duration + 30,
+                    env=ffmpeg_env,
                 )
 
                 if proc.returncode != 0 or not chunk_path.exists() or chunk_path.stat().st_size == 0:
@@ -1217,6 +1245,13 @@ async def youtube_diagnostics() -> dict:
     yt_dlp_version = getattr(yt_dlp.version, "__version__", "unknown")
     ffmpeg_path = shutil.which("ffmpeg")
 
+    # Quick test: can yt-dlp list formats for a known public video?
+    test_note = ""
+    if _PROXY:
+        test_note = f"Proxy configured: {_PROXY[:25]}..."
+    else:
+        test_note = "NO PROXY — YouTube will likely block datacenter IPs. Set YT_DLP_PROXY env var."
+
     return {
         "cookies_path": str(_COOKIES_FILE),
         "cookies_exists": _COOKIES_FILE.exists(),
@@ -1224,6 +1259,8 @@ async def youtube_diagnostics() -> dict:
         "yt_dlp_version": yt_dlp_version,
         "ffmpeg_available": ffmpeg_path is not None,
         "ffmpeg_path": ffmpeg_path,
+        "proxy": _PROXY[:30] + "..." if _PROXY else None,
+        "note": test_note,
         "player_clients": _PLAYER_CLIENTS,
         "active_live_tasks": list(_live_tasks.keys()),
     }
