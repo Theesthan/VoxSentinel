@@ -61,9 +61,8 @@ export default function Footer() {
           {/* Center links */}
           <div className="flex items-center gap-8">
             {[
-              { label: "GitHub", href: "#" },
-              { label: "API Docs", href: "#" },
-              { label: "Architecture", href: "#" },
+              { label: "GitHub", href: "https://github.com/Theesthan" },
+              { label: "API Docs", href: "https://github.com/Theesthan" },
             ].map((link) => (
               <a
                 key={link.label}

@@ -1,8 +1,8 @@
 # Architecture & Agent Guide (AGENTS.md)
 ## VoxSentinel — Real-Time Multi-Source Transcription, Analytics & Alerting Platform
 
-**Version:** 1.2
-**Date:** 2025-07-05
+**Version:** 1.4
+**Date:** 2026-03-05
 **For:** AI Coding Agents (Copilot, Cursor, Claude) and Human Developers
 
 ---
@@ -1170,6 +1170,29 @@ Dashboard "AI Keywords" sub-tab  →  POST /file-analyze/{job_id}/suggest-keywor
 ---
 
 ## Changelog
+
+### v1.4 — 2026-03-05
+
+**Auth UI & Navigation Flow:**
+- Shrunk auth card (max-width 480→420 px, reduced padding p-8/p-10 → p-6/p-8, smaller heading).
+- Removed Shield icon from auth page top-left bar.
+- Restored landing-first navigation: `/` shows Landing page (was redirecting to `/auth`).
+- Hero CTA “Launch Live Intelligence” now links to `/dashboard`; `ProtectedRoute` redirects unauthenticated users to `/auth` automatically.
+- Dashboard sidebar “Home” button renamed to “Landing”, navigates to `/` (landing page).
+- Removed unused `RootRedirect` component from `App.tsx`.
+
+### v1.3 — 2026-03-05
+
+**Firebase User Authentication:**
+- Replaced API-key-only auth with **Firebase Authentication** (Email/Password + Google OAuth).
+- New `firebase.ts` config module (`services/dashboard/src/lib/firebase.ts`).
+- Rewrote `AuthContext.tsx` to use Firebase `onAuthStateChanged`, `signInWithEmailAndPassword`, `createUserWithEmailAndPassword`, `signInWithPopup` (Google), `sendPasswordResetEmail`, and `signOut`.
+- New **AuthPage** (`services/dashboard/src/pages/AuthPage.tsx`) — single-page toggle between Login, Sign Up, and Forgot Password modes.
+- UI design: glassmorphism card, ambient floating particles, animated waveform strip, scrolling data ticker, floating code fragments, glowing orbs, corner decorations, animated inputs with focus glow, shine-effect submit button — matching the landing page aesthetic.
+- `App.tsx` route protection: `/dashboard` requires Firebase auth; unauthenticated users redirect to `/auth`; `/auth` redirects authenticated users to `/dashboard`.
+- Dashboard sidebar: user avatar (Google photo or initial), display name, email, and Sign Out button.
+- Landing page CTA now routes to `/auth` instead of `/dashboard`.
+- Default API key (`DEFAULT_API_KEY`) still injected for backend REST calls (backend auth unchanged).
 
 ### v1.2 — 2025-07-05
 

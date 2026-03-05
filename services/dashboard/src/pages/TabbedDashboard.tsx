@@ -23,8 +23,10 @@ import {
   Loader2,
   Pencil,
   Save,
+  LogOut,
 } from "lucide-react";
 import * as api from "../lib/api";
+import { useAuth } from "../lib/AuthContext";
 import type {
   Stream,
   Rule,
@@ -174,6 +176,7 @@ export default function TabbedDashboard() {
   const [health, setHealth] = useState<string>("checking");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [liveAlerts, setLiveAlerts] = useState<Alert[]>([]);
+  const { user, logout } = useAuth();
 
   // Register toast setter globally + request notification permission
   useEffect(() => {
@@ -259,6 +262,34 @@ export default function TabbedDashboard() {
 
         {/* Footer */}
         <div className="border-t border-white/[0.06] p-3 space-y-2">
+          {/* User profile */}
+          {user && (
+            <div className="flex items-center gap-3 px-2 py-2 mb-1">
+              {user.photoURL ? (
+                <img
+                  src={user.photoURL}
+                  alt=""
+                  className="w-7 h-7 rounded-full border border-white/10 shrink-0"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-full border border-white/10 bg-white/[0.05] flex items-center justify-center shrink-0">
+                  <span className="text-[10px] font-mono text-white/40 uppercase">
+                    {(user.displayName || user.email || "U").charAt(0)}
+                  </span>
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-mono text-white/50 truncate leading-tight">
+                  {user.displayName || "User"}
+                </p>
+                <p className="text-[8px] font-mono text-white/20 truncate leading-tight">
+                  {user.email}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Health indicator */}
           <div className="flex items-center gap-2 px-2 py-1">
             <div
@@ -283,6 +314,14 @@ export default function TabbedDashboard() {
           >
             <Home className="w-3 h-3" />
             Home
+          </button>
+
+          <button
+            onClick={() => logout()}
+            className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-mono tracking-[0.1em] text-white/20 hover:text-red-400/50 transition-colors uppercase"
+          >
+            <LogOut className="w-3 h-3" />
+            Sign Out
           </button>
         </div>
       </aside>

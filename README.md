@@ -218,6 +218,8 @@ cloudflared tunnel --url http://localhost:8010
 - **PII Redaction** — Microsoft Presidio + spaCy for automatic PII removal
 - **Multi-Channel Alerts** — WebSocket, Slack, webhooks (dispatched automatically on keyword match)
 - **Toast & Browser Notifications** — Real-time toast popups and browser push notifications for every alert across all sources (live stream, microphone, file analyze)
+- **Firebase Authentication** — Email/password and Google sign-in with compact glassmorphism auth UI, route protection, sidebar user profile + sign-out
+- **Landing-First Flow** — Landing page loads on `/`; CTA routes to dashboard (auth required); dashboard sidebar links back to landing
 - **Audit Trail** — SHA-256 hashed transcript segments with Merkle tree verification
 
 ## Running Tests

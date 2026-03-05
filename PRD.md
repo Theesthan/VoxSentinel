@@ -1,8 +1,8 @@
 # Product Requirements Document (PRD)
 ## Real-Time Multi-Source Transcription, Analytics, and Alerting Platform
 
-**Version:** 1.2
-**Date:** 2025-07-05
+**Version:** 1.4
+**Date:** 2026-03-05
 **Author:** Theesthan
 **Status:** Active
 

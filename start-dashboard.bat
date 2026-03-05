@@ -1,14 +1,20 @@
 @echo off
-cd /d "%~dp0services\dashboard"
-
-:: Install dependencies if node_modules is missing
-if not exist "node_modules" (
-    echo Installing dashboard dependencies...
-    npm install
-)
-
-:: Open browser after a 3-second delay (in background)
-start /b cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:5173"
-
-echo Starting VoxSentinel dashboard — opening http://localhost:5173
-npm run dev
+title VoxSentinel Dashboard 5173
+color 0B
+cd /d "c:\\Users\\thees\\Desktop\\Eko\\Eko\\VoxSentinel\\services\\dashboard"
+echo.
+echo  ====================================================
+echo   VoxSentinel - Dashboard
+echo  ====================================================
+echo.
+if exist "node_modules" goto :skip_install
+echo  Installing dependencies...
+call npm install
+echo.
+:skip_install
+echo  Dashboard : http://localhost:5173
+echo  Auth page : http://localhost:5173/auth
+echo  Make sure start-api.bat is running on 8011
+echo.
+start "" "http://localhost:5173"
+call npm run dev
