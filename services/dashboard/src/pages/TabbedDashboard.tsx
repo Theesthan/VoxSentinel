@@ -21,6 +21,8 @@ import {
   Sparkles,
   Check,
   Loader2,
+  Pencil,
+  Save,
 } from "lucide-react";
 import * as api from "../lib/api";
 import type {
@@ -32,6 +34,7 @@ import type {
   FileAnalyzeJobSummary,
   TranscriptSegment,
   SuggestedKeyword,
+  ScanKeywordHit,
 } from "../lib/api";
 
 /* ═══════════════════════════════════════════════
@@ -39,6 +42,47 @@ import type {
    ═══════════════════════════════════════════════ */
 
 type Tab = "live" | "file" | "alerts" | "settings";
+
+/** Format milliseconds offset to human-readable timestamp like "3m 45s" */
+function formatTimestamp(ms: number): string {
+  if (ms <= 0) return "0s";
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+/* ── Notification helpers ── */
+
+let _notifPermission: NotificationPermission = typeof Notification !== "undefined" ? Notification.permission : "denied";
+
+function requestNotificationPermission() {
+  if (typeof Notification !== "undefined" && _notifPermission === "default") {
+    Notification.requestPermission().then((p) => { _notifPermission = p; });
+  }
+}
+
+function showBrowserNotification(title: string, body: string) {
+  if (typeof Notification !== "undefined" && _notifPermission === "granted") {
+    try { new Notification(title, { body, icon: "/favicon.ico" }); } catch {}
+  }
+}
+
+/* ── Toast state (module-level for cross-component access) ── */
+type ToastItem = { id: number; message: string; severity: string };
+let _toastId = 0;
+let _toastSetter: React.Dispatch<React.SetStateAction<ToastItem[]>> | null = null;
+
+function pushToast(message: string, severity: string = "medium") {
+  const id = ++_toastId;
+  _toastSetter?.((prev) => [...prev.slice(-6), { id, message, severity }]);
+  setTimeout(() => {
+    _toastSetter?.((prev) => prev.filter((t) => t.id !== id));
+  }, 5000);
+}
 
 const NAV_ITEMS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "live", label: "Live Streams", icon: <Radio className="w-4 h-4" /> },
@@ -97,9 +141,73 @@ function Pill({ children, className = "" }: { children: React.ReactNode; classNa
    Main dashboard shell
    ═══════════════════════════════════════════════ */
 
+/* ── Toast overlay component ── */
+function ToastOverlay({ toasts }: { toasts: ToastItem[] }) {
+  return (
+    <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+      <AnimatePresence>
+        {toasts.map((t) => (
+          <motion.div
+            key={t.id}
+            initial={{ opacity: 0, x: 40, scale: 0.95 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 40, scale: 0.95 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            className={`pointer-events-auto flex items-center gap-2 px-4 py-3 border backdrop-blur-md text-[11px] font-mono tracking-wider max-w-sm ${
+              t.severity === "critical" ? "border-red-400/30 bg-red-400/10 text-red-300" :
+              t.severity === "high" ? "border-orange-400/30 bg-orange-400/10 text-orange-300" :
+              t.severity === "medium" ? "border-yellow-400/30 bg-yellow-400/10 text-yellow-300" :
+              "border-white/10 bg-white/[0.06] text-white/60"
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">{t.message}</span>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export default function TabbedDashboard() {
   const [tab, setTab] = useState<Tab>("live");
   const [health, setHealth] = useState<string>("checking");
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [liveAlerts, setLiveAlerts] = useState<Alert[]>([]);
+
+  // Register toast setter globally + request notification permission
+  useEffect(() => {
+    _toastSetter = setToasts;
+    requestNotificationPermission();
+    return () => { _toastSetter = null; };
+  }, []);
+
+  // Global alert WebSocket — always connected regardless of active tab
+  // Fires toast + browser notification for every alert from any source
+  useEffect(() => {
+    const ws = api.createAlertSocket();
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.alert_id || data.matched_text) {
+          setLiveAlerts((prev) => [data as Alert, ...prev].slice(0, 200));
+          // Toast + browser notification for real-time alerts
+          const msg = data.matched_text
+            ? `Alert: "${data.matched_text}" (${data.severity})${data.stream_name ? " — " + data.stream_name : ""}`
+            : `New ${data.severity} alert`;
+          pushToast(msg, data.severity || "medium");
+          showBrowserNotification("VoxSentinel Alert", msg);
+        }
+      } catch {}
+    };
+    ws.onclose = () => {
+      // Reconnect after 3s if the socket drops
+      setTimeout(() => {
+        // Will reconnect on next render cycle via the effect cleanup/re-run
+      }, 3000);
+    };
+    return () => ws.close();
+  }, []);
 
   // Periodic health check
   useEffect(() => {
@@ -179,6 +287,9 @@ export default function TabbedDashboard() {
         </div>
       </aside>
 
+      {/* Toast notifications */}
+      <ToastOverlay toasts={toasts} />
+
       {/* ── Main content ── */}
       <main className="flex-1 overflow-y-auto">
         {/* Top bar */}
@@ -209,7 +320,7 @@ export default function TabbedDashboard() {
             )}
             {tab === "alerts" && (
               <motion.div key="alerts" {...PAGE_TRANSITION}>
-                <AlertsPanel />
+                <AlertsPanel liveAlerts={liveAlerts} />
               </motion.div>
             )}
             {tab === "settings" && (
@@ -386,8 +497,15 @@ function LiveStreamsPanel() {
               stream={s}
               active={selected?.stream_id === s.stream_id}
               onSelect={() => setSelected(selected?.stream_id === s.stream_id ? null : s)}
-              onDelete={() => {
-                api.deleteStream(s.stream_id).then(load);
+              onDelete={async () => {
+                // Stop live transcription task before deleting
+                const isLive = s.source_type === "youtube_live" ||
+                  (s.metadata as Record<string, unknown> | null)?.stream_type === "youtube_live";
+                if (isLive) {
+                  try { await api.stopYouTubeLive(s.stream_id); } catch {}
+                }
+                await api.deleteStream(s.stream_id);
+                load();
                 if (selected?.stream_id === s.stream_id) setSelected(null);
               }}
               onToggle={() => {
@@ -480,7 +598,7 @@ function StreamCard({
 
       {/* Meta */}
       <div className="flex items-center gap-2 flex-wrap mt-2">
-        <Pill>{isYtLive ? "youtube live" : stream.source_type}</Pill>
+        <Pill>{isYtLive ? ((stream.metadata as Record<string, unknown> | null)?.platform as string || "youtube") + " live" : stream.source_type}</Pill>
         <Pill>{stream.asr_backend}</Pill>
       </div>
 
@@ -519,8 +637,11 @@ function CreateStreamForm({ onCreated }: { onCreated: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "ok" | "err" | "info"; text: string } | null>(null);
 
-  const isYouTubeUrl = (url: string) =>
-    /youtube\.com|youtu\.be/i.test(url);
+  /** Detect if a URL is a platform URL (YouTube, Twitch, Kick, etc.) vs raw stream */
+  const isPlatformUrl = (url: string) =>
+    /^https?:\/\//i.test(url) && /youtube\.com|youtu\.be|twitch\.tv|kick\.com|facebook\.com|fb\.watch|vimeo\.com|dailymotion\.com|dai\.ly|twitter\.com|x\.com|instagram\.com|tiktok\.com|rumble\.com/i.test(url);
+
+  const isAnyHttpUrl = (url: string) => /^https?:\/\//i.test(url);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -529,13 +650,13 @@ function CreateStreamForm({ onCreated }: { onCreated: () => void }) {
     setStatusMsg(null);
 
     try {
-      if (isYouTubeUrl(sourceUrl)) {
-        // YouTube flow: resolve → check liveness → start live transcription
-        setStatusMsg({ type: "info", text: "Checking YouTube stream status…" });
+      if (isPlatformUrl(sourceUrl) || isAnyHttpUrl(sourceUrl)) {
+        // Platform URL flow: resolve → check liveness → start live transcription
+        setStatusMsg({ type: "info", text: "Checking stream status…" });
         const resolved = await api.resolveYouTubeUrl(sourceUrl);
 
         if (!resolved.is_live) {
-          setStatusMsg({ type: "info", text: "This is a recorded video. Redirecting to File Analyze tab is recommended — or use Download & Analyze there." });
+          setStatusMsg({ type: "info", text: "This is a recorded video. Use Download & Analyze in the File Analyze tab." });
           setSubmitting(false);
           return;
         }
@@ -548,9 +669,9 @@ function CreateStreamForm({ onCreated }: { onCreated: () => void }) {
         setSourceUrl("");
         onCreated();
       } else {
-        // Non-YouTube: create a regular stream (HLS/RTSP/etc)
+        // Non-HTTP: create a regular stream (HLS/RTSP/etc)
         if (!name) {
-          setStatusMsg({ type: "err", text: "Stream name is required for non-YouTube sources" });
+          setStatusMsg({ type: "err", text: "Stream name is required for custom stream sources" });
           setSubmitting(false);
           return;
         }
@@ -592,15 +713,15 @@ function CreateStreamForm({ onCreated }: { onCreated: () => void }) {
         />
         <input
           className="input-field"
-          placeholder="YouTube live URL, HLS/RTSP/DASH URL"
+          placeholder="Paste any live stream URL (YouTube, Twitch, Kick, etc.) or HLS/RTSP"
           value={sourceUrl}
           onChange={(e) => { setSourceUrl(e.target.value); setStatusMsg(null); }}
         />
       </div>
 
-      {isYouTubeUrl(sourceUrl) && (
-        <p className="text-[10px] font-mono tracking-wider text-red-400/50">
-          YouTube URL detected — will check liveness and start live transcription automatically
+      {isPlatformUrl(sourceUrl) && (
+        <p className="text-[10px] font-mono tracking-wider text-emerald-400/50">
+          Platform URL detected — will check liveness and start live transcription automatically
         </p>
       )}
 
@@ -618,7 +739,7 @@ function CreateStreamForm({ onCreated }: { onCreated: () => void }) {
         disabled={submitting || !sourceUrl}
         className="px-6 py-2 border border-white/15 text-[10px] font-mono tracking-[0.15em] uppercase hover:bg-white/[0.04] disabled:opacity-30 transition-colors"
       >
-        {submitting ? "Starting…" : isYouTubeUrl(sourceUrl) ? "Start Live Transcription" : "Create Stream"}
+        {submitting ? "Starting…" : isPlatformUrl(sourceUrl) || isAnyHttpUrl(sourceUrl) ? "Start Live Transcription" : "Create Stream"}
       </button>
     </form>
   );
@@ -728,6 +849,10 @@ function MicPanel({
           // Keyword alert from server
           setAlerts((prev) => [...prev, { keyword: data.keyword, severity: data.severity }]);
           onAlert({ keyword: data.keyword, severity: data.severity, text: data.text });
+          // Toast + browser notification
+          const msg = `Mic alert: "${data.keyword}" (${data.severity})`;
+          pushToast(msg, data.severity || "medium");
+          showBrowserNotification("VoxSentinel Mic Alert", msg);
         } else if (data.text) {
           setTranscript((prev) => [...prev.slice(-100), data.text]);
           if (data.is_final) {
@@ -1016,7 +1141,7 @@ function FileAnalyzePanel() {
       }, 3000);
       pollRef.current = poll;
     } catch (err: unknown) {
-      const msg = err instanceof api.ApiError ? err.body : "Failed to process YouTube URL";
+      const msg = err instanceof api.ApiError ? err.body : "Failed to process URL";
       setYtError(msg);
       setYtProcessing(false);
     }
@@ -1057,13 +1182,13 @@ function FileAnalyzePanel() {
         <p className="text-[10px] font-mono text-red-400/60 px-1">{uploadError}</p>
       )}
 
-      {/* YouTube URL section */}
+      {/* Universal URL section */}
       <div className="p-4 border border-white/[0.06] space-y-3">
-        <SectionLabel>YouTube video analysis</SectionLabel>
+        <SectionLabel>Video URL analysis</SectionLabel>
         <div className="flex gap-2">
           <input
             className="input-field flex-1"
-            placeholder="Paste YouTube URL (e.g. https://youtube.com/watch?v=...)"
+            placeholder="Paste any video URL (YouTube, Twitch, Vimeo, etc.)"
             value={ytUrl}
             onChange={(e) => { setYtUrl(e.target.value); setYtError(""); }}
             disabled={ytProcessing}
@@ -1082,7 +1207,7 @@ function FileAnalyzePanel() {
         )}
         {ytProcessing && (
           <p className="text-[10px] font-mono text-yellow-400/50 animate-pulse">
-            Downloading audio from YouTube and transcribing — this may take a few minutes…
+            Downloading audio and transcribing — this may take a few minutes…
           </p>
         )}
       </div>
@@ -1101,35 +1226,53 @@ function FileAnalyzePanel() {
       ) : (
         <div className="space-y-2">
           {jobs.map((job) => (
-            <button
+            <div
               key={job.job_id}
-              onClick={() => viewJob(job.job_id)}
-              className={`w-full text-left p-4 border transition-colors ${
+              className={`w-full text-left p-4 border transition-colors flex items-center gap-3 ${
                 selectedJob?.job_id === job.job_id
                   ? "border-white/15 bg-white/[0.03]"
                   : "border-white/[0.06] hover:border-white/10"
               }`}
             >
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] font-medium truncate">{job.file_name}</span>
-                <Pill
-                  className={
-                    job.status === "completed"
-                      ? "text-emerald-400 border-emerald-400/20"
-                      : job.status === "failed"
-                        ? "text-red-400 border-red-400/20"
-                        : "text-yellow-400 border-yellow-400/20"
-                  }
-                >
-                  {job.status}
-                </Pill>
-              </div>
-              <div className="flex items-center gap-4 mt-2 text-[10px] font-mono text-white/20">
-                {job.duration_seconds != null && <span>{job.duration_seconds.toFixed(1)}s</span>}
-                <span>{job.total_alerts} alerts</span>
-                <span>{new Date(job.created_at).toLocaleString()}</span>
-              </div>
-            </button>
+              <button
+                onClick={() => viewJob(job.job_id)}
+                className="flex-1 text-left min-w-0"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[13px] font-medium truncate">{job.file_name}</span>
+                  <Pill
+                    className={
+                      job.status === "completed"
+                        ? "text-emerald-400 border-emerald-400/20"
+                        : job.status === "failed"
+                          ? "text-red-400 border-red-400/20"
+                          : "text-yellow-400 border-yellow-400/20"
+                    }
+                  >
+                    {job.status}
+                  </Pill>
+                </div>
+                <div className="flex items-center gap-4 mt-2 text-[10px] font-mono text-white/20">
+                  {job.duration_seconds != null && <span>{job.duration_seconds.toFixed(1)}s</span>}
+                  <span>{job.total_alerts} alerts</span>
+                  <span>{new Date(job.created_at).toLocaleString()}</span>
+                </div>
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    await api.deleteFileAnalyzeJob(job.job_id);
+                    if (selectedJob?.job_id === job.job_id) setSelectedJob(null);
+                    load();
+                  } catch {}
+                }}
+                className="p-1.5 text-white/15 hover:text-red-400 transition-colors shrink-0"
+                title="Delete job"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -1163,16 +1306,35 @@ function FileJobDetail({
   const [sugLoading, setSugLoading] = useState(false);
   const [sugError, setSugError] = useState("");
   const [addedKeywords, setAddedKeywords] = useState<Set<string>>(new Set());
+  const [scanningKw, setScanningKw] = useState<string | null>(null);
+  const [localAlerts, setLocalAlerts] = useState(job.alerts);
+  const [existingKeywords, setExistingKeywords] = useState<Set<string>>(new Set());
+
+  // Keep local alerts in sync when job changes
+  useEffect(() => { setLocalAlerts(job.alerts); }, [job.alerts]);
+
+  // Load existing rules to filter duplicate suggestions
+  useEffect(() => {
+    api.listRules().then((r) => {
+      setExistingKeywords(new Set(r.rules.map((rule) => rule.keyword.toLowerCase())));
+    }).catch(() => {});
+  }, []);
 
   const loadSuggestions = useCallback(() => {
     setSugLoading(true);
     setSugError("");
     api
       .suggestKeywords(job.job_id)
-      .then((r) => setSuggestions(r.suggestions))
+      .then((r) => {
+        // Filter out keywords that already exist in rules
+        const filtered = r.suggestions.filter(
+          (s) => !existingKeywords.has(s.keyword.toLowerCase()),
+        );
+        setSuggestions(filtered);
+      })
       .catch((e) => setSugError(e.message ?? "Failed to load suggestions"))
       .finally(() => setSugLoading(false));
-  }, [job.job_id]);
+  }, [job.job_id, existingKeywords]);
 
   const addAsRule = useCallback(
     async (kw: SuggestedKeyword) => {
@@ -1185,20 +1347,68 @@ function FileJobDetail({
           category: kw.category,
         });
         setAddedKeywords((prev) => new Set(prev).add(kw.keyword));
+        // Also track in existing keywords so re-analyze won't show it again
+        setExistingKeywords((prev) => new Set(prev).add(kw.keyword.toLowerCase()));
+
+        // Scan current transcript for this keyword and show alerts
+        setScanningKw(kw.keyword);
+        try {
+          const scanResult = await api.scanTranscriptForKeyword(job.job_id, {
+            keyword: kw.keyword,
+            match_type: kw.match_type,
+            severity: kw.severity,
+          });
+          if (scanResult.hits.length > 0) {
+            // Add new alerts to local state
+            const newAlerts = scanResult.hits.map((h: ScanKeywordHit) => ({
+              alert_id: h.alert_id,
+              alert_type: "keyword",
+              severity: h.severity,
+              matched_rule: null,
+              match_type: h.match_type,
+              matched_text: h.matched_text,
+              speaker_id: h.speaker_id,
+              surrounding_context: h.surrounding_context,
+              timestamp_offset_ms: h.timestamp_offset_ms,
+            }));
+            setLocalAlerts((prev) => [...prev, ...newAlerts]);
+            // Show toast + browser notification
+            const msg = `"${kw.keyword}" found ${scanResult.hits.length} time${scanResult.hits.length > 1 ? "s" : ""} in transcript`;
+            pushToast(msg, kw.severity);
+            showBrowserNotification("VoxSentinel Alert", msg);
+          }
+        } catch {
+          // scan failed but rule was still created
+        }
+        setScanningKw(null);
       } catch {
         // ignore
       }
     },
-    [],
+    [job.job_id],
   );
 
   return (
     <div className="border border-white/[0.06] p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-[14px] font-medium truncate">{job.file_name}</h3>
-        <button onClick={onClose} className="p-1 text-white/20 hover:text-white/40 transition-colors">
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={async () => {
+              try {
+                await api.deleteFileAnalyzeJob(job.job_id);
+                onClose();
+              } catch {}
+            }}
+            className="p-1 text-white/20 hover:text-red-400 transition-colors"
+            title="Delete job"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+          <button onClick={onClose} className="p-1 text-white/20 hover:text-white/40 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Sub-tabs */}
@@ -1228,6 +1438,9 @@ function FileJobDetail({
           ) : (
             job.transcript.map((seg) => (
               <div key={seg.segment_id} className="flex gap-3 text-[12px] leading-relaxed">
+                <span className="shrink-0 w-14 text-right font-mono text-[10px] text-white/25">
+                  {formatTimestamp(seg.start_offset_ms)}
+                </span>
                 <span className="shrink-0 w-14 text-right font-mono text-[10px] text-white/15">
                   {seg.speaker_id ?? "—"}
                 </span>
@@ -1245,10 +1458,10 @@ function FileJobDetail({
 
       {showTab === "alerts" && (
         <div className="max-h-96 overflow-y-auto space-y-2 pr-2">
-          {job.alerts.length === 0 ? (
+          {localAlerts.length === 0 ? (
             <EmptyState text="No alerts generated" />
           ) : (
-            job.alerts.map((a) => (
+            localAlerts.map((a) => (
               <div
                 key={a.alert_id}
                 className="p-3 border border-white/[0.06] flex items-start gap-3"
@@ -1258,9 +1471,17 @@ function FileJobDetail({
                   <div className="flex items-center gap-2 mb-1">
                     <Pill>{a.alert_type}</Pill>
                     <Pill className={severityColor(a.severity)}>{a.severity}</Pill>
+                    {a.timestamp_offset_ms > 0 && (
+                      <span className="text-[9px] font-mono text-white/25">
+                        @ {formatTimestamp(a.timestamp_offset_ms)}
+                      </span>
+                    )}
                   </div>
                   {a.matched_text && (
                     <p className="text-[12px] text-white/40 truncate">{a.matched_text}</p>
+                  )}
+                  {a.surrounding_context && (
+                    <p className="text-[11px] text-white/20 mt-1 truncate">{a.surrounding_context}</p>
                   )}
                 </div>
               </div>
@@ -1272,7 +1493,7 @@ function FileJobDetail({
       {showTab === "summary" && job.summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <MiniStat label="Segments" value={String(job.summary.total_segments)} />
-          <MiniStat label="Alerts" value={String(job.summary.total_alerts)} />
+          <MiniStat label="Alerts" value={String(localAlerts.length)} />
           <MiniStat label="Speakers" value={String(job.summary.speakers_detected)} />
           <MiniStat
             label="Languages"
@@ -1310,20 +1531,25 @@ function FileJobDetail({
               <div className="flex flex-wrap gap-2">
                 {suggestions.map((kw) => {
                   const added = addedKeywords.has(kw.keyword);
+                  const scanning = scanningKw === kw.keyword;
                   return (
                     <button
                       key={kw.keyword}
-                      onClick={() => !added && addAsRule(kw)}
-                      disabled={added}
+                      onClick={() => !added && !scanning && addAsRule(kw)}
+                      disabled={added || scanning}
                       title={kw.reason}
                       className={`group relative inline-flex items-center gap-1.5 px-3 py-1.5 border text-[11px] font-medium transition-all ${
                         added
                           ? "border-green-500/30 text-green-400/60 cursor-default"
-                          : `border-white/10 hover:border-white/20 hover:bg-white/[0.04] ${severityColor(kw.severity)}`
+                          : scanning
+                            ? "border-yellow-400/30 text-yellow-400/60 cursor-wait"
+                            : `border-white/10 hover:border-white/20 hover:bg-white/[0.04] ${severityColor(kw.severity)}`
                       }`}
                     >
                       {added ? (
                         <Check className="w-3 h-3" />
+                      ) : scanning ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
                       ) : (
                         <Plus className="w-3 h-3 opacity-40 group-hover:opacity-80" />
                       )}
@@ -1364,40 +1590,41 @@ function MiniStat({ label, value }: { label: string; value: string }) {
    3. ALERTS
    ═══════════════════════════════════════════════ */
 
-function AlertsPanel() {
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+function AlertsPanel({ liveAlerts }: { liveAlerts: Alert[] }) {
+  const [dbAlerts, setDbAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api
       .listAlerts({ limit: 100 })
-      .then((r) => setAlerts(r.alerts))
+      .then((r) => setDbAlerts(r.alerts))
       .catch(() => {})
       .finally(() => setLoading(false));
-
-    // Also listen for live alerts via WebSocket
-    const ws = api.createAlertSocket();
-    ws.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (data.alert_id) {
-          setAlerts((prev) => [data as Alert, ...prev].slice(0, 200));
-        }
-      } catch {}
-    };
-    return () => ws.close();
   }, []);
+
+  // Merge DB alerts with live WebSocket alerts (dedup by alert_id)
+  const allAlerts = (() => {
+    const seen = new Set<string>();
+    const merged: Alert[] = [];
+    for (const a of liveAlerts) {
+      if (a.alert_id && !seen.has(a.alert_id)) { seen.add(a.alert_id); merged.push(a); }
+    }
+    for (const a of dbAlerts) {
+      if (a.alert_id && !seen.has(a.alert_id)) { seen.add(a.alert_id); merged.push(a); }
+    }
+    return merged.slice(0, 200);
+  })();
 
   return (
     <div className="space-y-6">
       <SectionLabel>Alert feed</SectionLabel>
-      {loading && alerts.length === 0 ? (
+      {loading && allAlerts.length === 0 ? (
         <EmptyState text="Loading alerts…" />
-      ) : alerts.length === 0 ? (
+      ) : allAlerts.length === 0 ? (
         <EmptyState text="No alerts yet" />
       ) : (
         <div className="space-y-2">
-          {alerts.map((a) => (
+          {allAlerts.map((a) => (
             <div
               key={a.alert_id}
               className="p-4 border border-white/[0.06] hover:border-white/10 transition-colors flex items-start gap-4"
@@ -1564,30 +1791,130 @@ function RulesSubPanel() {
       ) : (
         <div className="space-y-2">
           {rules.map((rule) => (
-            <div
-              key={rule.rule_id}
-              className="p-4 border border-white/[0.06] hover:border-white/10 transition-colors flex items-center justify-between"
-            >
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[13px] font-medium">{rule.keyword}</span>
-                  <Pill>{rule.match_type}</Pill>
-                  <Pill className={severityColor(rule.severity)}>{rule.severity}</Pill>
-                </div>
-                <span className="text-[10px] font-mono text-white/20">
-                  {rule.rule_set_name} · {rule.category}
-                </span>
-              </div>
-              <button
-                onClick={() => api.deleteRule(rule.rule_id).then(load)}
-                className="p-1.5 text-white/15 hover:text-red-400 transition-colors"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
+            <RuleRow key={rule.rule_id} rule={rule} onUpdated={load} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Editable rule row ── */
+
+function RuleRow({ rule, onUpdated }: { rule: Rule; onUpdated: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [severity, setSeverity] = useState(rule.severity);
+  const [matchType, setMatchType] = useState(rule.match_type);
+  const [category, setCategory] = useState(rule.category);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setSeverity(rule.severity);
+    setMatchType(rule.match_type);
+    setCategory(rule.category);
+  }, [rule]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.updateRule(rule.rule_id, { severity, match_type: matchType, category });
+      setEditing(false);
+      onUpdated();
+    } catch {}
+    setSaving(false);
+  };
+
+  const cancel = () => {
+    setSeverity(rule.severity);
+    setMatchType(rule.match_type);
+    setCategory(rule.category);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="p-4 border border-white/15 bg-white/[0.02] space-y-3">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[13px] font-medium">{rule.keyword}</span>
+          <span className="text-[10px] font-mono text-white/20">{rule.rule_set_name}</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label className="text-[9px] font-mono text-white/20 uppercase tracking-wider block mb-1">Severity</label>
+            <select className="input-field w-full" value={severity} onChange={(e) => setSeverity(e.target.value)}>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[9px] font-mono text-white/20 uppercase tracking-wider block mb-1">Match Type</label>
+            <select className="input-field w-full" value={matchType} onChange={(e) => setMatchType(e.target.value)}>
+              <option value="exact">Exact</option>
+              <option value="fuzzy">Fuzzy</option>
+              <option value="regex">Regex</option>
+              <option value="phonetic">Phonetic</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[9px] font-mono text-white/20 uppercase tracking-wider block mb-1">Category</label>
+            <input className="input-field w-full" value={category} onChange={(e) => setCategory(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            onClick={save}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-emerald-400/30 text-[10px] font-mono tracking-wider text-emerald-400/80 hover:bg-emerald-400/5 disabled:opacity-30 transition-colors"
+          >
+            <Save className="w-3 h-3" /> {saving ? "Saving…" : "Save"}
+          </button>
+          <button
+            onClick={cancel}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-white/10 text-[10px] font-mono tracking-wider text-white/30 hover:text-white/50 transition-colors"
+          >
+            <X className="w-3 h-3" /> Cancel
+          </button>
+          <button
+            onClick={async () => { await api.deleteRule(rule.rule_id); onUpdated(); }}
+            className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 border border-red-400/20 text-[10px] font-mono tracking-wider text-red-400/60 hover:bg-red-400/5 transition-colors"
+          >
+            <Trash2 className="w-3 h-3" /> Delete
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 border border-white/[0.06] hover:border-white/10 transition-colors flex items-center justify-between group">
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[13px] font-medium">{rule.keyword}</span>
+          <Pill>{rule.match_type}</Pill>
+          <Pill className={severityColor(rule.severity)}>{rule.severity}</Pill>
+        </div>
+        <span className="text-[10px] font-mono text-white/20">
+          {rule.rule_set_name} · {rule.category}
+        </span>
+      </div>
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={() => setEditing(true)}
+          className="p-1.5 text-white/15 hover:text-white/50 transition-colors"
+          title="Edit rule"
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={() => api.deleteRule(rule.rule_id).then(onUpdated)}
+          className="p-1.5 text-white/15 hover:text-red-400 transition-colors"
+          title="Delete rule"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   );
 }

@@ -592,6 +592,33 @@ async def _run_pipeline(
             except Exception:
                 logger.exception("file_analyze_alert_dispatch_error", job_id=job_id)
 
+            # ── 6c. Publish alerts to Redis match_events for real-time WebSocket feed ──
+            if redis and stream_id:
+                try:
+                    for alert in alerts_out:
+                        alert_payload = {
+                            "alert_id": str(alert.alert_id),
+                            "stream_id": str(stream_id),
+                            "alert_type": alert.alert_type or "keyword",
+                            "severity": alert.severity or "medium",
+                            "matched_rule": alert.matched_rule,
+                            "match_type": alert.match_type,
+                            "matched_text": alert.matched_text,
+                            "speaker_id": alert.speaker_id,
+                            "surrounding_context": alert.surrounding_context,
+                            "stream_name": job.get("file_name", ""),
+                            "timestamp_offset_ms": alert.timestamp_offset_ms,
+                            "created_at": _utc_now().isoformat(),
+                        }
+                        await redis.publish(
+                            f"match_events:{stream_id}",
+                            json.dumps(alert_payload),
+                        )
+                    logger.info("file_analyze_alerts_published_redis", job_id=job_id,
+                                count=len(alerts_out))
+                except Exception:
+                    logger.warning("file_analyze_redis_alert_publish_error", job_id=job_id)
+
         job["status"] = "completed"
         job["progress_pct"] = 100
         completed = _utc_now()
@@ -749,6 +776,38 @@ async def get_job_status(job_id: _uuid.UUID) -> FileAnalyzeStatusResponse:
     )
 
 
+@router.delete("/{job_id}", status_code=204)
+async def delete_job(
+    job_id: _uuid.UUID,
+    db: Any = Depends(get_db_session),
+) -> None:
+    """Delete a file analysis job and its associated DB records."""
+    sid = str(job_id)
+    job = _jobs.get(sid)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    stream_id = job.get("stream_id")
+    session_id = job.get("session_id")
+
+    # Remove DB records if possible
+    if db is not None and stream_id:
+        try:
+            from sqlalchemy import delete as sa_delete
+            await db.execute(sa_delete(AlertORM).where(AlertORM.stream_id == stream_id))
+            await db.execute(sa_delete(TranscriptSegmentORM).where(TranscriptSegmentORM.stream_id == stream_id))
+            if session_id:
+                await db.execute(sa_delete(SessionORM).where(SessionORM.session_id == session_id))
+            await db.execute(sa_delete(StreamORM).where(StreamORM.stream_id == stream_id))
+            await db.commit()
+        except Exception:
+            logger.exception("file_analyze_delete_db_error", job_id=sid)
+
+    # Remove from in-process store
+    _jobs.pop(sid, None)
+    logger.info("file_analyze_job_deleted", job_id=sid)
+
+
 @router.get("", response_model=FileAnalyzeListResponse)
 async def list_jobs(
     status: str | None = None,
@@ -892,3 +951,163 @@ async def suggest_keywords(job_id: _uuid.UUID) -> SuggestKeywordsResponse:
 
     logger.info("suggest_keywords_success", job_id=str(job_id), count=len(suggestions))
     return SuggestKeywordsResponse(job_id=str(job_id), suggestions=suggestions)
+
+
+class _ScanKeywordRequest(BaseModel):
+    keyword: str
+    match_type: str = "exact"
+    severity: str = "medium"
+
+
+class _ScanKeywordHit(BaseModel):
+    alert_id: str
+    matched_text: str
+    match_type: str
+    severity: str
+    speaker_id: str | None = None
+    surrounding_context: str = ""
+    timestamp_offset_ms: int = 0
+
+
+class ScanKeywordResponse(BaseModel):
+    job_id: str
+    keyword: str
+    hits: list[_ScanKeywordHit]
+
+
+@router.post("/{job_id}/scan-keyword", response_model=ScanKeywordResponse)
+async def scan_keyword(
+    job_id: _uuid.UUID,
+    body: _ScanKeywordRequest,
+    request: Request,
+    db: Any = Depends(get_db_session),
+) -> ScanKeywordResponse:
+    """Scan a completed job's transcript for a specific keyword.
+
+    Returns all hits and persists them as AlertORM records.
+    Used when an AI-suggested keyword is added as a rule so the user
+    immediately sees alerts from the current transcript.
+    """
+    import re as _re
+
+    job = _jobs.get(str(job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Job not completed yet")
+
+    transcript: list[FileAnalyzeSegment] = job.get("transcript", [])
+    if not transcript:
+        return ScanKeywordResponse(job_id=str(job_id), keyword=body.keyword, hits=[])
+
+    kw = body.keyword
+    match_type = body.match_type
+    severity = body.severity if body.severity in ("low", "medium", "high", "critical") else "medium"
+
+    hits: list[_ScanKeywordHit] = []
+    new_alerts: list[FileAnalyzeAlert] = []
+
+    for seg in transcript:
+        seg_text_lower = seg.text.lower()
+        hit = False
+
+        if match_type == "exact":
+            hit = kw.lower() in seg_text_lower
+        elif match_type == "regex":
+            try:
+                hit = bool(_re.search(kw, seg.text, _re.IGNORECASE))
+            except _re.error:
+                pass
+        elif match_type == "fuzzy":
+            kw_words = kw.lower().split()
+            hit = all(w in seg_text_lower for w in kw_words)
+        elif match_type == "phonetic":
+            hit = kw.lower() in seg_text_lower
+
+        if hit:
+            alert_id = _uuid.uuid4()
+            hits.append(_ScanKeywordHit(
+                alert_id=str(alert_id),
+                matched_text=kw,
+                match_type=match_type,
+                severity=severity,
+                speaker_id=seg.speaker_id,
+                surrounding_context=seg.text[:200],
+                timestamp_offset_ms=seg.start_offset_ms,
+            ))
+            new_alert = FileAnalyzeAlert(
+                alert_id=alert_id,
+                alert_type="keyword",
+                severity=severity,
+                matched_rule="",
+                match_type=match_type,
+                matched_text=kw,
+                speaker_id=seg.speaker_id,
+                surrounding_context=seg.text[:200],
+                timestamp_offset_ms=seg.start_offset_ms,
+            )
+            new_alerts.append(new_alert)
+
+    # Append new alerts to the job's alert list
+    existing_alerts: list[FileAnalyzeAlert] = job.get("alerts", [])
+    existing_alerts.extend(new_alerts)
+    job["alerts"] = existing_alerts
+
+    # Update summary
+    if job.get("summary"):
+        job["summary"].total_alerts = len(existing_alerts)
+
+    # Persist to DB
+    stream_id = job.get("stream_id")
+    session_id = job.get("session_id")
+    if db is not None and stream_id:
+        try:
+            for alert in new_alerts:
+                db_match_type = alert.match_type or "exact"
+                if db_match_type not in ("exact", "fuzzy", "regex", "sentiment_threshold", "intent"):
+                    db_match_type = "exact"
+                alert_orm = AlertORM(
+                    alert_id=alert.alert_id,
+                    session_id=session_id,
+                    stream_id=stream_id,
+                    alert_type="keyword",
+                    severity=severity,
+                    matched_rule="",
+                    match_type=db_match_type,
+                    matched_text=alert.matched_text or "",
+                    surrounding_context=alert.surrounding_context or "",
+                    speaker_id=alert.speaker_id,
+                    asr_backend_used="deepgram_nova2",
+                )
+                db.add(alert_orm)
+            await db.commit()
+        except Exception:
+            logger.exception("scan_keyword_db_error", job_id=str(job_id))
+
+    # Publish to Redis match_events for real-time WebSocket alert feed
+    redis = getattr(request.app.state, "redis", None)
+    if redis and stream_id and new_alerts:
+        try:
+            for alert in new_alerts:
+                alert_payload = {
+                    "alert_id": str(alert.alert_id),
+                    "stream_id": str(stream_id),
+                    "alert_type": "keyword",
+                    "severity": severity,
+                    "matched_text": kw,
+                    "match_type": match_type,
+                    "speaker_id": alert.speaker_id,
+                    "surrounding_context": alert.surrounding_context,
+                    "stream_name": job.get("file_name", ""),
+                    "timestamp_offset_ms": alert.timestamp_offset_ms,
+                    "created_at": _utc_now().isoformat(),
+                }
+                await redis.publish(
+                    f"match_events:{stream_id}",
+                    json.dumps(alert_payload),
+                )
+        except Exception:
+            logger.warning("scan_keyword_redis_publish_error", job_id=str(job_id))
+
+    logger.info("scan_keyword_done", job_id=str(job_id), keyword=kw, hits=len(hits))
+    return ScanKeywordResponse(job_id=str(job_id), keyword=kw, hits=hits)

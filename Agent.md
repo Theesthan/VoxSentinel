@@ -1,8 +1,8 @@
 # Architecture & Agent Guide (AGENTS.md)
 ## VoxSentinel — Real-Time Multi-Source Transcription, Analytics & Alerting Platform
 
-**Version:** 1.1
-**Date:** 2025-07-03
+**Version:** 1.2
+**Date:** 2025-07-05
 **For:** AI Coding Agents (Copilot, Cursor, Claude) and Human Developers
 
 ---
@@ -114,8 +114,9 @@
    c. DistilBERT classifies sentiment as "negative" (0.89)
 9. Diarization assigns speaker: SPEAKER_01
 10. Alert Dispatch creates alert event, sends to:
-    a. WebSocket → dashboard shows red alert with highlighted "gun"
-    b. Slack → #security-alerts channel receives formatted message
+    a. Redis `match_events:{stream_id}` → dashboard global WebSocket fires toast + browser notification
+    b. WebSocket → dashboard shows red alert with highlighted "gun"
+    c. Slack → #security-alerts channel receives formatted message
 11. Storage Service writes TranscriptSegment + Alert to PostgreSQL
 12. Audit Service computes SHA-256 hash of segment, stores in segment_hash column
 
@@ -141,6 +142,7 @@ and instead uses **Deepgram's pre-recorded REST API** (`POST https://api.deepgra
 7. Results persisted:
    - TranscriptSegmentORM rows → PostgreSQL (for transcript retrieval)
    - AlertORM rows → PostgreSQL (for Alerts tab in dashboard)
+   - Each alert published to Redis `match_events:{stream_id}` for real-time WebSocket broadcast + toast/browser notifications
    - ~~Transcript segments → Elasticsearch "transcripts" index~~ (deferred to V2)
    - In-process job dict (job_id → transcript, alerts, summary) for polling
 8. Dashboard polls GET /api/v1/file-analyze/{job_id} until status="completed"
@@ -1164,5 +1166,28 @@ Dashboard "AI Keywords" sub-tab  →  POST /file-analyze/{job_id}/suggest-keywor
 **Env vars (Worker side):** `WORKER_PORT` (default 8787), `WORKER_SECRET`
 
 **Fallback:** If `YT_WORKER_URL` is not set, `youtube.py` falls back to local `yt-dlp`/`ffmpeg` (works for local dev).
+
+---
+
+## Changelog
+
+### v1.2 — 2025-07-05
+
+**Notification & Alert Fixes:**
+- **Global alert WebSocket** — Moved `/ws/alerts` WebSocket connection from AlertsPanel (tab-scoped) to top-level `TabbedDashboard`. Alerts now fire toast + browser notifications regardless of which tab the user is viewing.
+- **File analyze Redis pub/sub** — `file_analyze.py` now publishes every alert to Redis `match_events:{stream_id}` channel after persisting to DB. Previously only live-stream and mic alerts were broadcast via WebSocket; file-analyze alerts only went to external channels (webhook/email/Slack).
+- **Scan-keyword alerts** — The `/file-analyze/scan-keyword` endpoint also publishes alerts to Redis `match_events:{stream_id}` so newly scanned keywords trigger real-time notifications.
+
+**AI Keyword Deduplication:**
+- `FileJobDetail` loads the full keyword rule list on mount and filters AI-suggested keywords against existing rules. Duplicate suggestions (case-insensitive) are suppressed. The exclusion set updates immediately when a user adds a suggestion as a rule.
+
+**Inline Keyword Rule Editing:**
+- New `RuleRow` component in `RulesSubPanel` with inline edit mode. Users can edit severity (low/medium/high/critical), match type (exact/fuzzy/regex), and category for any existing keyword rule.
+- Delete button available in both view and edit modes.
+- Uses existing `PATCH /rules/{id}` endpoint (`api.updateRule`).
+
+### v1.1 — 2025-07-03
+
+- Initial documented version (universal URL support, file analyze URLs, human-readable timestamps, AI keyword scan, toast + browser notification infrastructure).
 
 ---

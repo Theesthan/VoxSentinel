@@ -198,6 +198,22 @@ async def delete_stream(
     if stream is None:
         raise HTTPException(status_code=404, detail="Stream not found")
 
+    # ── Cancel any running live transcription task for this stream ──
+    try:
+        from api.routers.youtube import _live_tasks
+        sid = str(stream_id)
+        task = _live_tasks.get(sid)
+        if task and not task.done():
+            task.cancel()
+            try:
+                import asyncio
+                await task
+            except asyncio.CancelledError:
+                pass
+            _live_tasks.pop(sid, None)
+    except Exception:
+        pass  # youtube module may not be loaded
+
     await db.delete(stream)
     await db.commit()
 

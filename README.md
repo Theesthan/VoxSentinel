@@ -210,11 +210,14 @@ cloudflared tunnel --url http://localhost:8010
 - **YouTube Live Transcription** — Paste a YouTube live URL, auto-detect if stream is live, capture audio via HLS + FFmpeg, transcribe in real time via Deepgram
 - **File Analyze** — Upload audio files for batch transcription via Deepgram pre-recorded API
 - **Keyword Detection** — Exact match (Aho-Corasick), fuzzy match (RapidFuzz), regex patterns
+- **Inline Keyword Editing** — Edit severity, match type, and category of existing keyword rules directly from the dashboard; delete rules in one click
+- **AI Keyword Suggestions** — Groq-powered keyword extraction from transcripts with automatic deduplication against existing rules
 - **Legislative Tracking** — Pre-configured rule sets for monitoring government audio streams for bills, votes, committees, enactment language
 - **Speaker Diarization** — Identify and track speakers via pyannote.audio
 - **Sentiment Analysis** — DistilBERT-based sentiment scoring per segment
 - **PII Redaction** — Microsoft Presidio + spaCy for automatic PII removal
 - **Multi-Channel Alerts** — WebSocket, Slack, webhooks (dispatched automatically on keyword match)
+- **Toast & Browser Notifications** — Real-time toast popups and browser push notifications for every alert across all sources (live stream, microphone, file analyze)
 - **Audit Trail** — SHA-256 hashed transcript segments with Merkle tree verification
 
 ## Running Tests

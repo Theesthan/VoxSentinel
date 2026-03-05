@@ -1,8 +1,8 @@
 # Product Requirements Document (PRD)
 ## Real-Time Multi-Source Transcription, Analytics, and Alerting Platform
 
-**Version:** 1.1
-**Date:** 2025-07-03
+**Version:** 1.2
+**Date:** 2025-07-05
 **Author:** Theesthan
 **Status:** Active
 
@@ -248,14 +248,17 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 ---
 
 ### F8: Alert Dispatch System
-**Description:** Route keyword matches, sentiment escalations, compliance violations, and other events to configured alert channels with throttling and deduplication.
+**Description:** Route keyword matches, sentiment escalations, compliance violations, and other events to configured alert channels with throttling and deduplication. All alert sources (live stream, microphone, file analyze) publish to Redis `match_events:{stream_id}` for real-time dashboard notification.
 
 **User Story:** As a security operator, I want to receive a Slack notification with the transcript context when a threat keyword is detected so that I can act without watching the dashboard constantly.
 
-**Priority:** P0 (WebSocket + Webhook), P1 (Slack)
+**Priority:** P0 (WebSocket + Webhook + Toast/Browser Notifications), P1 (Slack)
 
 **Acceptance Criteria:**
 - WebSocket channel pushes alert events to connected dashboard clients in <50 ms from event generation.
+- **Toast + Browser Notifications:** A global WebSocket connection (always active regardless of dashboard tab) fires an in-app toast popup and a browser push notification for every alert from any source (live stream, mic, file analyze, scan-keyword).
+- **File Analyze Alerts:** `file_analyze.py` publishes each alert to Redis `match_events:{stream_id}` after persisting to DB, enabling real-time WebSocket delivery.
+- **Scan-Keyword Alerts:** The `/file-analyze/scan-keyword` endpoint also publishes newly matched alerts to Redis `match_events:{stream_id}`.
 - Webhook channel sends HTTP POST to configured URLs with JSON payload and retries (3 attempts, exponential backoff).
 - Slack channel sends formatted messages to configured Slack channels via incoming webhook or bot API.
 - Each alert payload includes: `alert_id`, `alert_type` (keyword/sentiment/compliance/intent), `stream_id`, `session_id`, `timestamp`, `speaker_id`, `channel`, `matched_keyword_or_rule`, `match_type`, `similarity_score`, `surrounding_context`, `sentiment_scores`, `confidence`, `asr_backend_used`.
@@ -434,10 +437,27 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 
 ---
 
-### F15: AI-Powered Keyword Suggestions
-**Description:** Automatically suggest relevant keywords from a file-analyze transcript using the Groq API (Llama 3.3 70B Versatile). Helps operators quickly bootstrap keyword rules without manually listening to entire recordings.
+### F14b: Inline Keyword Rule Editing
+**Description:** Allow operators to edit existing keyword rules (severity, match type, category) and delete rules directly from the dashboard Rules sub-panel, without navigating to a separate settings page.
 
-**User Story:** As an operator, after uploading and transcribing a file, I want the system to suggest contextually relevant keywords so I can quickly create monitoring rules.
+**User Story:** As an operator, I want to quickly adjust the severity or match type of a keyword rule, or delete rules I no longer need, without leaving the keywords panel.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+- Each rule row in the Rules sub-panel displays an edit (pencil) icon on hover.
+- Clicking edit enters inline edit mode exposing dropdowns for severity (low/medium/high/critical), match type (exact/fuzzy/regex), and a text input for category.
+- Save button calls `PATCH /rules/{id}` and refreshes the rule list.
+- Cancel button discards changes and exits edit mode.
+- Delete button is available in both view and edit modes, calls `DELETE /rules/{id}`.
+- No full-page navigation required; all editing happens in-place.
+
+---
+
+### F15: AI-Powered Keyword Suggestions
+**Description:** Automatically suggest relevant keywords from a file-analyze transcript using the Groq API (Llama 3.3 70B Versatile). Helps operators quickly bootstrap keyword rules without manually listening to entire recordings. Suggestions are deduplicated against existing keyword rules.
+
+**User Story:** As an operator, after uploading and transcribing a file, I want the system to suggest contextually relevant keywords so I can quickly create monitoring rules without seeing duplicates of keywords I already have.
 
 **Priority:** P1
 
@@ -445,8 +465,10 @@ V1 is complete when the platform can ingest ≥5 concurrent RTSP/HLS audio strea
 - A new "AI Keywords" sub-tab appears in the File Job Detail view.
 - Clicking "Suggest Keywords" sends the first 3 000 words of the transcript to Groq.
 - The system returns up to 20 single-word or short-phrase keywords.
+- **Deduplication:** Suggestions that already exist in the user's keyword rule list (case-insensitive match) are filtered out before display.
 - Each keyword renders as a clickable pill button in the dashboard.
-- Clicking a pill creates a new rule with that keyword (exact match, medium severity).
+- Clicking a pill creates a new rule with that keyword (exact match, medium severity) and immediately removes it from the suggestions list.
+- The exclusion set updates in real time as rules are added.
 - If `GROQ_API_KEY` is not set, the endpoint returns a clear error message.
 - Free-tier Groq keys work out of the box (no billing required).
 

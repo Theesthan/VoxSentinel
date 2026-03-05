@@ -41,6 +41,15 @@ if _deno_bin.is_dir() and str(_deno_bin) not in os.environ.get("PATH", ""):
 # Track active live transcription tasks so they can be stopped
 _live_tasks: dict[str, asyncio.Task] = {}
 
+# ── yt-dlp version check at startup ──
+try:
+    import yt_dlp as _yt_dlp_mod
+    _YT_DLP_VERSION = getattr(_yt_dlp_mod.version, "__version__", "unknown")
+    logger.info("yt_dlp_version", version=_YT_DLP_VERSION)
+except Exception:
+    _YT_DLP_VERSION = "unavailable"
+    logger.error("yt_dlp_not_installed", hint="pip install yt-dlp")
+
 # Proxy for yt-dlp — set YT_DLP_PROXY on Railway to bypass datacenter IP blocks.
 # Accepts HTTP/HTTPS/SOCKS5 e.g. "socks5://user:pass@host:port" or "http://host:port"
 _PROXY: str | None = os.getenv("YT_DLP_PROXY") or os.getenv("TG_YT_PROXY") or None
@@ -510,30 +519,80 @@ def _is_youtube_url(url: str) -> bool:
     )
 
 
-async def _resolve_youtube(url: str) -> dict:
-    """Use yt-dlp to extract info about a YouTube URL.
+def _is_supported_url(url: str) -> bool:
+    """Check if URL looks like a supported streaming/video platform link.
+    yt-dlp supports 1000+ sites. We accept any http(s) URL and let yt-dlp handle it."""
+    url_lower = url.lower().strip()
+    return url_lower.startswith("http://") or url_lower.startswith("https://")
 
-    Returns a dict with keys: is_live, title, hls_url (if live).
+
+def _detect_platform(url: str) -> str:
+    """Detect the platform from a URL for display purposes."""
+    url_lower = url.lower()
+    platforms = {
+        "youtube.com": "YouTube", "youtu.be": "YouTube",
+        "twitch.tv": "Twitch",
+        "kick.com": "Kick",
+        "facebook.com": "Facebook", "fb.watch": "Facebook",
+        "vimeo.com": "Vimeo",
+        "dailymotion.com": "Dailymotion",
+        "twitter.com": "Twitter/X", "x.com": "Twitter/X",
+        "instagram.com": "Instagram",
+        "tiktok.com": "TikTok",
+        "rumble.com": "Rumble",
+        "odysee.com": "Odysee",
+        "soundcloud.com": "SoundCloud",
+        "spotify.com": "Spotify",
+        "reddit.com": "Reddit",
+        "bilibili.com": "Bilibili",
+        "nicovideo.jp": "NicoNico",
+    }
+    for domain, name in platforms.items():
+        if domain in url_lower:
+            return name
+    return "Web"
+
+
+async def _resolve_generic_url(url: str) -> dict:
+    """Use yt-dlp to extract info about any supported URL (YouTube, Twitch, Kick, etc.).
+
+    Returns a dict with keys: is_live, title, hls_url (if live), platform.
     Tries remote worker first if YT_WORKER_URL is configured.
     Falls back to local yt-dlp, then HTTP scraping.
     """
     import re as _re
 
+    platform = _detect_platform(url)
+
     # --- Try remote worker first (if configured) ---
-    worker_result = await _worker_resolve(url)
-    if worker_result is not None:
-        logger.info("youtube_resolved_via_worker", title=worker_result["title"][:50])
-        return worker_result
-    import httpx
+    if _is_youtube_url(url):
+        worker_result = await _worker_resolve(url)
+        if worker_result is not None:
+            logger.info("resolved_via_worker", title=worker_result["title"][:50])
+            worker_result["platform"] = platform
+            return worker_result
 
     # --- Try yt-dlp first (multiple strategies) ---
     info = None
-    for strategy in _yt_dlp_strategies():
+
+    # For YouTube, use the specialized player-client strategies
+    if _is_youtube_url(url):
+        for strategy in _yt_dlp_strategies():
+            try:
+                info = await _yt_dlp_extract_with_timeout(url, strategy, timeout_secs=60)
+                break
+            except Exception as e:
+                logger.warning("yt_strategy_failed", error=str(e)[:200])
+                continue
+    else:
+        # For non-YouTube, use basic yt-dlp options
+        base = _base_opts(skip_download=True)
+        base["format"] = "bestaudio/best"
         try:
-            info = await asyncio.to_thread(_yt_dlp_extract, url, strategy)
-            break
-        except Exception:
-            continue
+            info = await _yt_dlp_extract_with_timeout(url, base, timeout_secs=60)
+        except Exception as e:
+            logger.warning("yt_dlp_generic_extract_failed", error=str(e)[:200])
+            pass
 
     # --- Fallback: yt-dlp subprocess (handles bot challenges better on cloud) ---
     if info is None:
@@ -564,35 +623,43 @@ async def _resolve_youtube(url: str) -> dict:
             "hls_url": hls_url,
             "formats": info.get("formats", []),
             "info": info,
+            "platform": platform,
         }
 
-    # --- Fallback: HTTP scrape for liveness ---
-    logger.warning("yt_dlp_failed_all_strategies", url=url)
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(url, follow_redirects=True, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        })
-        html = resp.text
+    # --- Fallback: HTTP scrape for liveness (YouTube only) ---
+    if _is_youtube_url(url):
+        logger.warning("yt_dlp_failed_all_strategies", url=url)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, follow_redirects=True, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            })
+            html = resp.text
 
-    # Check for live indicators in page source
-    is_live = bool(
-        _re.search(r'"isLive"\s*:\s*true', html)
-        or _re.search(r'"isLiveNow"\s*:\s*true', html)
-        or _re.search(r'"liveBroadcastDetails"', html)
-        or _re.search(r'"style"\s*:\s*"LIVE"', html)
-    )
+        is_live = bool(
+            _re.search(r'"isLive"\s*:\s*true', html)
+            or _re.search(r'"isLiveNow"\s*:\s*true', html)
+            or _re.search(r'"liveBroadcastDetails"', html)
+            or _re.search(r'"style"\s*:\s*"LIVE"', html)
+        )
 
-    # Extract title
-    title_match = _re.search(r'"title"\s*:\s*"([^"]+)"', html)
-    title = title_match.group(1) if title_match else "Unknown"
+        title_match = _re.search(r'"title"\s*:\s*"([^"]+)"', html)
+        title = title_match.group(1) if title_match else "Unknown"
 
-    return {
-        "is_live": is_live,
-        "title": title,
-        "hls_url": None,  # Can't get HLS without yt-dlp
-        "formats": [],
-        "info": {},
-    }
+        return {
+            "is_live": is_live,
+            "title": title,
+            "hls_url": None,
+            "formats": [],
+            "info": {},
+            "platform": platform,
+        }
+
+    raise RuntimeError(f"Could not resolve URL from {platform}")
+
+
+# Keep backward compatibility alias
+async def _resolve_youtube(url: str) -> dict:
+    return await _resolve_generic_url(url)
 
 
 # Path to Netscape cookies file for YouTube authentication.
@@ -669,6 +736,25 @@ def _yt_dlp_extract(url: str, opts: dict) -> dict:
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
+
+
+async def _yt_dlp_extract_with_timeout(
+    url: str, opts: dict, timeout_secs: int = 60,
+) -> dict:
+    """Run yt-dlp extract_info with an asyncio timeout guard.
+
+    Prevents indefinite hangs (e.g. Deno JS challenge solver stalls).
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_yt_dlp_extract, url, opts),
+            timeout=timeout_secs,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            f"yt-dlp extraction timed out after {timeout_secs}s "
+            f"(yt-dlp {_YT_DLP_VERSION}) — try upgrading: pip install -U yt-dlp"
+        )
 
 
 # ── Subprocess fallbacks (handle bot-checks better on cloud IPs) ─────────────
@@ -853,7 +939,10 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])
 
-            await asyncio.to_thread(_download)
+            await asyncio.wait_for(
+                asyncio.to_thread(_download),
+                timeout=300,  # 5-min hard cap per strategy
+            )
 
             # Find the output file (yt-dlp may name it differently)
             wav_pattern = UPLOAD_DIR / f"{job_id}_yt_raw.wav"
@@ -882,9 +971,11 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
 
     logger.error("yt_download_all_strategies_exhausted",
                  url=url, total_strategies=len(strategies),
-                 last_error=str(last_err)[:300])
+                 last_error=str(last_err)[:300],
+                 yt_dlp_version=_YT_DLP_VERSION)
     raise RuntimeError(
-        f"All yt-dlp download strategies failed: {str(last_err)[:200]}"
+        f"All yt-dlp download strategies failed (yt-dlp {_YT_DLP_VERSION}). "
+        f"Try: pip install -U yt-dlp  |  Last error: {str(last_err)[:150]}"
     )
 
 
@@ -892,39 +983,42 @@ async def _download_youtube_audio(url: str, job_id: str) -> Path:
 async def resolve_youtube_url(
     body: YouTubeResolveRequest,
 ) -> YouTubeResolveResponse:
-    """Resolve a YouTube URL to determine if it's live or VOD.
+    """Resolve a YouTube/Twitch/Kick/etc. URL to determine if it's live or VOD.
 
     For live streams, returns the HLS URL that can be used to create a stream.
     For VODs, returns info so the frontend can trigger a file-analyze download.
+    Accepts any URL supported by yt-dlp (1000+ sites).
     """
-    if not _is_youtube_url(body.url):
+    if not _is_supported_url(body.url):
         raise HTTPException(
             status_code=400,
-            detail="URL does not appear to be a YouTube link",
+            detail="URL must be a valid http/https link",
         )
 
     try:
-        result = await _resolve_youtube(body.url)
+        result = await _resolve_generic_url(body.url)
     except Exception as exc:
-        logger.exception("youtube_resolve_error", url=body.url)
+        logger.exception("url_resolve_error", url=body.url)
         raise HTTPException(
             status_code=400,
-            detail=f"Could not resolve YouTube URL: {str(exc)[:200]}",
+            detail=f"Could not resolve URL: {str(exc)[:200]}",
         )
+
+    platform = result.get("platform", "Web")
 
     if result["is_live"]:
         return YouTubeResolveResponse(
             is_live=True,
             title=result["title"],
             hls_url=result["hls_url"],
-            message="Live stream detected. Use the HLS URL to create a stream.",
+            message=f"Live stream detected on {platform}. Starting transcription.",
         )
     else:
         return YouTubeResolveResponse(
             is_live=False,
             title=result["title"],
             hls_url=None,
-            message="VOD detected. Use 'Download & Analyze' to transcribe.",
+            message=f"VOD detected on {platform}. Use 'Download & Analyze' to transcribe.",
         )
 
 
@@ -935,18 +1029,19 @@ async def download_and_analyze(
     db: Any = Depends(get_db_session),
     redis: Any = Depends(get_redis),
 ) -> dict:
-    """Download a YouTube VOD's audio and submit it for file analysis.
+    """Download a video/audio from a URL and submit it for file analysis.
 
+    Supports any URL that yt-dlp handles (YouTube, Twitch, Kick, Vimeo, etc.).
     Strategy order (Deepgram first for best quality, captions as last resort):
     1. yt-dlp audio download → Deepgram ASR (speaker diarization, high accuracy)
-    2. Piped/Invidious audio URL → download → Deepgram ASR
-    3. youtube-transcript-api captions (last resort; no diarization, lower quality)
+    2. Piped/Invidious audio URL → download → Deepgram ASR (YouTube only)
+    3. youtube-transcript-api captions (YouTube only; no diarization, lower quality)
     Returns the job_id for polling status.
     """
-    if not _is_youtube_url(body.url):
+    if not _is_supported_url(body.url):
         raise HTTPException(
             status_code=400,
-            detail="URL does not appear to be a YouTube link",
+            detail="URL must be a valid http/https link",
         )
 
     # Import file_analyze internals
@@ -964,12 +1059,14 @@ async def download_and_analyze(
 
     # Resolve title
     try:
-        result = await _resolve_youtube(body.url)
+        result = await _resolve_generic_url(body.url)
         title = result["title"]
+        platform = result.get("platform", "Web")
     except Exception:
-        title = "YouTube Video"
+        title = "Video"
+        platform = _detect_platform(body.url)
 
-    display_name = f"[YouTube] {title}"
+    display_name = f"[{platform}] {title}"
 
     # ── Create Stream + Session in DB ──
     stream = StreamORM(
@@ -1040,12 +1137,14 @@ async def download_and_analyze(
         )
         return _make_response()
 
-    # ── Strategy 2: Piped / Invidious audio URL → download → Deepgram ──
-    job["progress_pct"] = 20
-    logger.info("yt_trying_piped_invidious", job_id=str(job_id))
-    audio_url = await _piped_get_audio_url(body.url)
-    if not audio_url:
-        audio_url = await _invidious_get_stream_url(body.url)
+    # ── Strategy 2: Piped / Invidious audio URL → download → Deepgram (YouTube only) ──
+    audio_url: str | None = None
+    if _is_youtube_url(body.url):
+        job["progress_pct"] = 20
+        logger.info("yt_trying_piped_invidious", job_id=str(job_id))
+        audio_url = await _piped_get_audio_url(body.url)
+        if not audio_url:
+            audio_url = await _invidious_get_stream_url(body.url)
 
     if audio_url:
         try:
@@ -1064,28 +1163,31 @@ async def download_and_analyze(
             logger.warning("alt_api_download_failed",
                            job_id=str(job_id), error=str(exc)[:200])
 
-    # ── Strategy 3 (last resort): youtube-transcript-api captions ──
-    job["progress_pct"] = 25
-    logger.info("yt_trying_captions_last_resort", job_id=str(job_id))
-    captions = await _get_yt_captions(body.url)
-    if captions:
-        logger.info("yt_captions_path_taken", job_id=str(job_id), segments=len(captions))
-        # Stream captions word-by-word in background task
-        asyncio.create_task(
-            _stream_captions_to_redis(
-                stream_id, captions, job, redis, db_factory, request,
-            ),
-        )
-        return _make_response()
+    # ── Strategy 3 (last resort): youtube-transcript-api captions (YouTube only) ──
+    if _is_youtube_url(body.url):
+        job["progress_pct"] = 25
+        logger.info("yt_trying_captions_last_resort", job_id=str(job_id))
+        captions = await _get_yt_captions(body.url)
+        if captions:
+            logger.info("yt_captions_path_taken", job_id=str(job_id), segments=len(captions))
+            # Stream captions word-by-word in background task
+            asyncio.create_task(
+                _stream_captions_to_redis(
+                    stream_id, captions, job, redis, db_factory, request,
+                ),
+            )
+            return _make_response()
 
     # ── All strategies exhausted ──
+    platform = _detect_platform(body.url)
     job["status"] = "failed"
     job["error_message"] = (
-        "Could not transcribe this YouTube video. "
-        "Audio download was blocked by YouTube (datacenter IP), "
-        "Piped/Invidious APIs did not return audio, and no captions were available."
+        f"Could not transcribe this {platform} video. "
+        f"Audio download failed (yt-dlp {_YT_DLP_VERSION}). "
+        "Try updating yt-dlp: pip install -U yt-dlp"
     )
-    logger.error("youtube_all_strategies_failed", url=body.url)
+    logger.error("all_strategies_failed", url=body.url, platform=platform,
+                 yt_dlp_version=_YT_DLP_VERSION)
     raise HTTPException(status_code=500, detail=job["error_message"])
 
 
@@ -1661,33 +1763,36 @@ async def start_live_transcription(
     db: Any = Depends(get_db_session),
     redis: Any = Depends(get_redis),
 ) -> dict:
-    """Start live transcription of a YouTube live stream.
+    """Start live transcription of a live stream (YouTube, Twitch, Kick, etc.).
 
     Resolves the URL, checks it's live, then starts a background task
     that captures audio in chunks and transcribes via Deepgram.
     Returns stream_id for WebSocket subscription.
+    Accepts any URL supported by yt-dlp.
     """
-    if not _is_youtube_url(body.url):
-        raise HTTPException(status_code=400, detail="URL does not appear to be a YouTube link")
+    if not _is_supported_url(body.url):
+        raise HTTPException(status_code=400, detail="URL must be a valid http/https link")
 
     # Quick liveness check
     try:
-        result = await _resolve_youtube(body.url)
+        result = await _resolve_generic_url(body.url)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not resolve YouTube URL: {str(exc)[:200]}")
+        raise HTTPException(status_code=400, detail=f"Could not resolve URL: {str(exc)[:200]}")
 
     if not result["is_live"]:
+        platform = result.get("platform", _detect_platform(body.url))
         raise HTTPException(
             status_code=400,
-            detail="This YouTube stream is not currently live. Use 'Download & Analyze' for recorded videos.",
+            detail=f"This {platform} stream is not currently live. Use 'Download & Analyze' for recorded videos.",
         )
 
     from tg_common.db.orm_models import SessionORM, StreamORM
 
     stream_id = _uuid.uuid4()
     session_id = _uuid.uuid4()
-    title = result.get("title", "YouTube Live")
-    display_name = body.name or f"[YT Live] {title}"
+    title = result.get("title", "Live Stream")
+    platform = result.get("platform", _detect_platform(body.url))
+    display_name = body.name or f"[{platform} Live] {title}"
 
     # Create Stream + Session in DB
     stream = StreamORM(
@@ -1698,7 +1803,7 @@ async def start_live_transcription(
         asr_backend="deepgram_nova2",
         status="active",
         session_id=session_id,
-        metadata_={"youtube_url": body.url, "title": title, "is_live": True, "stream_type": "youtube_live"},
+        metadata_={"youtube_url": body.url, "title": title, "is_live": True, "stream_type": "youtube_live", "platform": platform},
     )
     session = SessionORM(
         session_id=session_id,

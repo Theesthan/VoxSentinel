@@ -477,6 +477,9 @@ export async function submitFileForAnalysis(
 export const getFileAnalyzeJob = (jobId: string) =>
   apiFetch<FileAnalyzeStatusResponse>(`/file-analyze/${jobId}`);
 
+export const deleteFileAnalyzeJob = (jobId: string) =>
+  apiFetch<void>(`/file-analyze/${jobId}`, { method: "DELETE" });
+
 export const listFileAnalyzeJobs = (params?: { status?: string; limit?: number }) => {
   const q = new URLSearchParams();
   if (params?.status) q.set("status", params.status);
@@ -503,6 +506,33 @@ export interface SuggestKeywordsResponse {
 export const suggestKeywords = (jobId: string) =>
   apiFetch<SuggestKeywordsResponse>(`/file-analyze/${jobId}/suggest-keywords`, {
     method: "POST",
+  });
+
+// ── Scan Keyword (File Analyze) ──
+
+export interface ScanKeywordHit {
+  alert_id: string;
+  matched_text: string;
+  match_type: string;
+  severity: string;
+  speaker_id: string | null;
+  surrounding_context: string;
+  timestamp_offset_ms: number;
+}
+
+export interface ScanKeywordResponse {
+  job_id: string;
+  keyword: string;
+  hits: ScanKeywordHit[];
+}
+
+export const scanTranscriptForKeyword = (
+  jobId: string,
+  body: { keyword: string; match_type?: string; severity?: string },
+) =>
+  apiFetch<ScanKeywordResponse>(`/file-analyze/${jobId}/scan-keyword`, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 
 // ── WebSocket helpers ──
